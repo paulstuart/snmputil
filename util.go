@@ -176,6 +176,7 @@ func oidStrings(in string) []string {
 }
 
 // Finder finds the longest matching table entry for base, the given OID
+// TODO: this scheme should probably be replaced by a radix tree
 func Finder(base, oid string) (string, string, error) {
 	if strings.HasPrefix(oid, ".") {
 		oid = oid[1:]
@@ -186,7 +187,6 @@ func Finder(base, oid string) (string, string, error) {
 	}
 	tuple := tuples[i]
 	for k := i + tuple.Entries; k > i; k-- {
-		//fmt.Println("SEARCH:", k, "/", i)
 		if strings.HasPrefix(oid, tuples[k].OID) {
 			return tuples[k].OID, tuples[k].Name, nil
 		}
@@ -220,21 +220,19 @@ func octetsToString(in []byte) string {
 // SuffixValue returns a map the OID suffixes and their respective names for each column of table
 func SuffixValue(lookup map[string]string) PDUFunc {
 	return func(root string, pdu gosnmp.SnmpPDU) error {
-		//fmt.Println("SUFFIX VALUE:", pdu.Value)
 		switch pdu.Type {
 		case gosnmp.OctetString:
 			lookup[pdu.Name[len(root)+2:]] = string(pdu.Value.([]byte))
 		case gosnmp.IPAddress:
 			lookup[pdu.Name[len(root)+2:]] = pdu.Value.(string)
 		default:
-			fmt.Println("UNKNOWN TYPE:", pdu.Type, "VAL:", pdu.Value)
+			log.Println("UNKNOWN TYPE:", pdu.Type, "VAL:", pdu.Value)
 		}
 		return nil
 	}
 }
 
 func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender) (gosnmp.WalkFunc, error) {
-	//fmt.Println("BULK OID:", crit.OID)
 	filterNames := []*regexp.Regexp{}
 	for _, n := range crit.Regexps {
 		re, err := regexp.Compile(n)
@@ -253,14 +251,13 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender) (gosnmp.Wa
 		return nil, err
 	}
 
-	//fmt.Println("BULK OK!")
 	return func(pdu gosnmp.SnmpPDU) error {
 		// find the oid of a table entry, if it exists
 		subOID, name, err := Finder(crit.OID, pdu.Name)
-		//fmt.Println("FN OID:", subOID)
 		if err != nil {
 			return err
 		}
+
 		filtered := crit.Keep
 		for _, r := range filterNames {
 			if r.MatchString(name) {
@@ -280,6 +277,7 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender) (gosnmp.Wa
 		var column, alias string
 		suffix := pdu.Name[len(subOID)+2:]
 		group := oidStrings(suffix)
+
 		// interface names/aliases only apply to OIDs starting with 'if'
 		if strings.HasPrefix(name, "if") {
 			column = columns[suffix]
@@ -288,10 +286,8 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender) (gosnmp.Wa
 		if len(group) == 0 && len(column) == 0 && suffix != "0" {
 			column = makeString(strings.Split(suffix, "."))
 		}
-		//fmt.Println("OID:", crit.OID, "SUFFIX:", suffix, "COL:", column, "NAME:", name, "TYPE:", pdu.Type, "VALUE:", pdu.Value)
-		if Verbose {
-			log.Println("OID:", crit.OID, "SUFFIX:", suffix, "COL:", column, "NAME:", name, "TYPE:", pdu.Type, "VALUE:", pdu.Value)
-		}
+
+		say("OID:%s SUFFIX:%s COL:%s NAME:%s TYPE:%x VALUE:%v", crit.OID, suffix, column, name, pdu.Type, pdu.Value)
 		t := map[string]string{}
 		if len(column) > 0 {
 			t["Column"] = column
@@ -330,11 +326,6 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender) (gosnmp.Wa
 			}
 			return nil
 		}
-		/*
-			fields := map[string]interface{}{
-				"value": pdu.Value,
-			}
-		*/
 		return sender(name, t, pdu.Value, time.Now())
 	}, nil
 }
@@ -385,6 +376,7 @@ func InterfaceNames(p Profile, fn func(string, string)) error {
 		})
 }
 
+// Bulkwalker will do a bulkwalk on the device specified in the Profile
 func Bulkwalker(p Profile, crit Criteria, sender Sender, freq int, errFn ErrFunc, status chan StatsChan) error {
 	client, err := NewClient(p)
 	if err != nil {
