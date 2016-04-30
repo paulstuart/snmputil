@@ -2,6 +2,8 @@ package snmputil
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"testing"
 
 	"github.com/soniah/gosnmp"
@@ -48,7 +50,9 @@ func init() {
 	if err := LoadOIDFile(oidFile); err != nil {
 		panic(err)
 	}
-	Verbose = testing.Verbose()
+	if testing.Verbose() {
+		Verbose = log.New(os.Stderr, "", 0)
+	}
 }
 
 func testSysName(client *gosnmp.GoSNMP) error {

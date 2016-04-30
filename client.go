@@ -5,11 +5,10 @@
 package snmputil
 
 import (
-	"fmt"
 	"log"
-	"os"
 	"time"
 
+	"github.com/pkg/errors"
 	"github.com/soniah/gosnmp"
 )
 
@@ -17,26 +16,7 @@ const (
 	defaultPort = 161
 )
 
-var (
-	authProto = map[string]gosnmp.SnmpV3AuthProtocol{
-		"NoAuth": gosnmp.NoAuth,
-		"MD5":    gosnmp.MD5,
-		"SHA":    gosnmp.SHA,
-	}
-	privacy = map[string]gosnmp.SnmpV3PrivProtocol{
-		"NoPriv": gosnmp.NoPriv,
-		"DES":    gosnmp.DES,
-		"AES":    gosnmp.AES,
-	}
-
-	ErrBadUser     = fmt.Errorf("missing snmp v3 username")
-	ErrBadPassword = fmt.Errorf("missing snmp v3 user password")
-	ErrBadProtocol = fmt.Errorf("invalid snmp v3 auth protocol")
-	ErrLevel       = fmt.Errorf("invalid snmp v3 security level")
-	ErrPrivacy     = fmt.Errorf("missing snmp v3 privacy password")
-	ErrVersion     = fmt.Errorf("invalid snmp version")
-)
-
+// Profile contains the settings needed to establish an SNMP connection
 type Profile struct {
 	Host, Community, Version string
 	Port, Timeout, Retries   int
@@ -46,20 +26,30 @@ type Profile struct {
 
 // NewClient returns an snmp client that has connected to an snmp agent
 func NewClient(p Profile) (*gosnmp.GoSNMP, error) {
-
 	var ok bool
 	var aProto gosnmp.SnmpV3AuthProtocol
 	var pProto gosnmp.SnmpV3PrivProtocol
 	var msgFlags gosnmp.SnmpV3MsgFlags
 
+	authProto := map[string]gosnmp.SnmpV3AuthProtocol{
+		"NoAuth": gosnmp.NoAuth,
+		"MD5":    gosnmp.MD5,
+		"SHA":    gosnmp.SHA,
+	}
+	privacy := map[string]gosnmp.SnmpV3PrivProtocol{
+		"NoPriv": gosnmp.NoPriv,
+		"DES":    gosnmp.DES,
+		"AES":    gosnmp.AES,
+	}
+
 	authCheck := func() error {
 		if len(p.AuthPass) < 1 {
 			log.Printf("Error no SNMPv3 password for host %s", p.Host)
-			return ErrBadPassword
+			return errors.New("missing snmp v3 user password")
 		}
 		if aProto, ok = authProto[p.AuthProto]; !ok {
 			log.Printf("Error in Auth Protocol %s for host %s", p.AuthProto, p.Host)
-			return ErrBadProtocol
+			return errors.New("invalid snmp v3 auth protocol")
 		}
 		return nil
 	}
@@ -67,7 +57,7 @@ func NewClient(p Profile) (*gosnmp.GoSNMP, error) {
 	v3auth := func() (*gosnmp.UsmSecurityParameters, error) {
 		if len(p.AuthUser) < 1 {
 			log.Printf("Error username not found in snmpv3 %s in host %s", p.AuthUser, p.Host)
-			return nil, ErrBadUser
+			return nil, errors.New("missing snmp v3 username")
 		}
 
 		switch p.SecLevel {
@@ -89,13 +79,11 @@ func NewClient(p Profile) (*gosnmp.GoSNMP, error) {
 		case "AuthPriv":
 			msgFlags = gosnmp.AuthPriv
 			if len(p.PrivPass) < 1 {
-				log.Printf("Error privPass not found in snmpv3 for host %s", p.Host)
-				return nil, ErrPrivacy
+				return nil, errors.New("missing snmp v3 privacy password")
 			}
 
 			if pProto, ok = privacy[p.PrivProto]; !ok {
-				log.Printf("Error in Priv Protocol %s for host %s", p.PrivProto, p.Host)
-				return nil, ErrBadPassword
+				return nil, errors.Errorf("invalid in Privcy Protocol %s for host %s", p.PrivProto, p.Host)
 			}
 
 			return &gosnmp.UsmSecurityParameters{
@@ -107,8 +95,7 @@ func NewClient(p Profile) (*gosnmp.GoSNMP, error) {
 			}, authCheck()
 
 		default:
-			log.Printf("invalid security level %s for host %s", p.SecLevel, p.Host)
-			return nil, ErrLevel
+			return nil, errors.Errorf("invalid security level %s for host %s", p.SecLevel, p.Host)
 		}
 	}
 
@@ -140,11 +127,11 @@ func NewClient(p Profile) (*gosnmp.GoSNMP, error) {
 		client.SecurityParameters = usmParams
 		client.Version = gosnmp.Version3
 	default:
-		return nil, ErrVersion
+		return nil, errors.New("invalid snmp version")
 	}
 
-	if Debug {
-		client.Logger = log.New(os.Stderr, "", 0)
+	if Debug != nil {
+		client.Logger = Debug
 	}
 
 	return client, client.Connect()
