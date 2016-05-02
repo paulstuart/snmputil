@@ -1,9 +1,8 @@
 // Package snmputil provides helper routines for gosnmp
-
+//
 // Copyright 2016 Paul Stuart. All rights reserved.
 // Use of this source code is governed by a BSD-style license
 // that can be found in the LICENSE file.
-
 package snmputil
 
 import (
@@ -25,12 +24,15 @@ import (
 var (
 	// Debug will log snmp debugging output if set
 	Debug *log.Logger
+
 	// Verbose will log output if set
 	Verbose *log.Logger
-	// ToOID is a lookup table to find the dotted form of a symbolic name
-	ToOID = make(map[string]string)
-	// Done will terminate all polling processes if closed
-	Done = make(chan struct{})
+
+	// lookupOID is a lookup table to find the dotted form of a symbolic name
+	lookupOID = make(map[string]string)
+
+	// done will terminate all polling processes if closed
+	done = make(chan struct{})
 	// how to break up column indexes with multiple elements
 	multiName = strings.Fields("Grouping Member Element Item")
 	rtree     = radix.New()
@@ -95,7 +97,7 @@ func LoadOIDs(in io.Reader) error {
 		if f[1][:1] != "." {
 			f[1] = "." + f[1]
 		}
-		ToOID[f[0]] = f[1]
+		lookupOID[f[0]] = f[1]
 		rtree, _, _ = rtree.Insert([]byte(f[1]), f[0])
 	}
 	return scanner.Err()
@@ -164,8 +166,9 @@ func octetsToString(in []byte) string {
 	return strings.Join(buf, ".")
 }
 
-// BulkColumns returns a WalkFunc that will process results from a bulkwalk
+// BulkColumns returns a gosnmp.WalkFunc that will process results from a bulkwalk
 func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender) (gosnmp.WalkFunc, error) {
+	// set up regexp filters
 	filterNames := []*regexp.Regexp{}
 	for _, n := range crit.Regexps {
 		re, err := regexp.Compile(n)
@@ -175,42 +178,32 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender) (gosnmp.Wa
 		filterNames = append(filterNames, re)
 	}
 
-	// suffixValue returns a map the OID indexes and their respective names for each column of table
-	suffixValue := func(root string, lookup map[string]string) (gosnmp.WalkFunc, error) {
-		oid, err := GetOID(root)
-		if err != nil {
-			return nil, err
-		}
-		return func(pdu gosnmp.SnmpPDU) error {
+	// get interface column names and aliases
+	columns := make(map[string]string)
+	aliases := make(map[string]string)
+	suffixValue := func(oid string, lookup map[string]string) error {
+		fn := func(pdu gosnmp.SnmpPDU) error {
 			switch pdu.Type {
 			case gosnmp.OctetString:
 				lookup[pdu.Name[len(oid)+2:]] = string(pdu.Value.([]byte))
 			case gosnmp.IPAddress:
+				fmt.Printf("IP ADDR TYPE: %x VALUE: %v\n", pdu.Type, pdu.Value)
 				lookup[pdu.Name[len(oid)+2:]] = pdu.Value.(string)
 			default:
 				say("UNKNOWN TYPE: %x VALUE: %v\n", pdu.Type, pdu.Value)
 			}
 			return nil
-		}, nil
+		}
+		return BulkWalkAll(client, oid, fn)
 	}
-	columns := make(map[string]string)
-	suffixFn, err := suffixValue(ifName, columns)
-	if err != nil {
+	if err := suffixValue(ifName, columns); err != nil {
 		return nil, err
 	}
-	if err := BulkWalkAll(client, ifName, suffixFn); err != nil {
-		return nil, err
-	}
-
-	aliases := make(map[string]string)
-	suffixFn, err = suffixValue(ifAlias, aliases)
-	if err != nil {
-		return nil, err
-	}
-	if err := BulkWalkAll(client, ifAlias, suffixFn); err != nil {
+	if err := suffixValue(ifAlias, aliases); err != nil {
 		return nil, err
 	}
 
+	// our handler that will process each returned SNMP packet
 	return func(pdu gosnmp.SnmpPDU) error {
 		subOID, v, ok := rtree.Root().LongestPrefix([]byte(pdu.Name))
 		if !ok {
@@ -294,7 +287,7 @@ func GetOID(oid string) (string, error) {
 	if strings.HasPrefix(oid, "1.") {
 		return oid, nil
 	}
-	fixed, ok := ToOID[oid]
+	fixed, ok := lookupOID[oid]
 	if !ok {
 		return oid, fmt.Errorf("no OID found for %s", oid)
 	}
@@ -333,6 +326,29 @@ func InterfaceNames(p Profile, fn func(string, string)) error {
 		})
 }
 
+// Sampler will do a bulkwalk on the device specified using the given Profile
+func Sampler(p Profile, crit Criteria, sender Sender) error {
+	client, err := NewClient(p)
+	if err != nil {
+		return err
+	}
+	crit.OID, err = GetOID(crit.OID)
+	if err != nil {
+		return err
+	}
+	if sender == nil {
+		sender = func(name string, tags map[string]string, value interface{}, when time.Time) error {
+			fmt.Printf("Host:%s Name:%s Value:%v Tags:%v\n", client.Target, name, value, tags)
+			return nil
+		}
+	}
+	walker, err := BulkColumns(client, crit, sender)
+	if err != nil {
+		return err
+	}
+	return BulkWalkAll(client, crit.OID, walker)
+}
+
 // Bulkwalker will do a bulkwalk on the device specified in the Profile
 func Bulkwalker(p Profile, crit Criteria, sender Sender, freq int, errFn ErrFunc, status chan StatsChan) error {
 	client, err := NewClient(p)
@@ -346,7 +362,7 @@ func Bulkwalker(p Profile, crit Criteria, sender Sender, freq int, errFn ErrFunc
 	if crit.Tags == nil {
 		crit.Tags = make(map[string]string)
 	}
-	crit.Tags["Host"] = client.Target
+	crit.Tags["host"] = client.Target
 	if Debug != nil {
 		client.Logger = Debug
 	}
@@ -386,9 +402,13 @@ func Poller(client *gosnmp.GoSNMP, oid string, freq int, walker gosnmp.WalkFunc,
 			walk()
 		case s := <-status:
 			s <- stats
-		case _ = <-Done:
+		case _ = <-done:
 			client.Conn.Close()
 			return
 		}
 	}
+}
+
+func Quit() {
+	close(done)
 }

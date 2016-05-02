@@ -58,6 +58,17 @@ func TestFilters(t *testing.T) {
 	time.Sleep(33 * time.Second)
 }
 
+func TestSample(t *testing.T) {
+	crit := Criteria{
+		OID:     "system",
+		Tags:    testTags,
+		Regexps: []string{".*Time"},
+	}
+	if err := Sampler(profileV3, crit, nil); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestClose(t *testing.T) {
 	// give it a chance to respond with values
 	time.Sleep(5 * time.Second)
