@@ -13,11 +13,12 @@ import (
 	"log"
 	"os"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	radix "github.com/hashicorp/go-immutable-radix"
+	"github.com/pkg/errors"
 	"github.com/soniah/gosnmp"
 )
 
@@ -29,11 +30,10 @@ var (
 	// ToOID is a lookup table to find the dotted form of a symbolic name
 	ToOID = make(map[string]string)
 	// Done will terminate all polling processes if closed
-	Done      = make(chan struct{})
-	oidLookup = make(map[string]int) // the index of the tuple
-	table     = []oidTuple{}
+	Done = make(chan struct{})
 	// how to break up column indexes with multiple elements
 	multiName = strings.Fields("Grouping Member Element Item")
+	rtree     = radix.New()
 )
 
 const (
@@ -63,27 +63,8 @@ type SnmpStats struct {
 // StatsChan is used to request SnmpStats from a polling process
 type StatsChan chan SnmpStats
 
-// PDUFunc takes the original OID and a resulting SNMP packet to process
-type PDUFunc func(string, gosnmp.SnmpPDU) error
-
 // ErrFunc accepts SNMP errors for processing
 type ErrFunc func(error)
-
-// oidTuple is used to track the number of columns a table has
-// It is used to determine if an OID is a table member
-type oidTuple struct {
-	OID, Name string
-	Entries   int
-}
-
-// Tuples is a list of tuples containing OID table info
-type Tuples []oidTuple
-
-func (o Tuples) Len() int      { return len(o) }
-func (o Tuples) Swap(i, j int) { o[i], o[j] = o[j], o[i] }
-func (o Tuples) Less(i, j int) bool {
-	return strings.Compare(o[i].OID, o[j].OID) < 1
-}
 
 func say(fmt string, args ...interface{}) {
 	if Verbose != nil {
@@ -110,26 +91,12 @@ func LoadOIDs(in io.Reader) error {
 		if len(f) < 2 {
 			continue
 		}
-		ToOID[f[0]] = f[1]
-		table = append(table, oidTuple{f[1], f[0], 0})
-	}
-	// sort the tuples so we can find sequences of oids
-	// with matching prefix
-	sort.Sort(Tuples(table))
-	for i := 0; i < len(table); i++ {
-		t1 := table[i]
-		cnt := 0
-		for j := i + 1; j < len(table); j++ {
-			t2 := table[j]
-			if !strings.HasPrefix(t2.OID, t1.OID) {
-				break
-			}
-			cnt++
+		// snmptranslate isn't providing leading dot
+		if f[1][:1] != "." {
+			f[1] = "." + f[1]
 		}
-		table[i].Entries = cnt
-	}
-	for i, t := range table {
-		oidLookup[t.OID] = i
+		ToOID[f[0]] = f[1]
+		rtree, _, _ = rtree.Insert([]byte(f[1]), f[0])
 	}
 	return scanner.Err()
 }
@@ -174,25 +141,6 @@ func oidStrings(in string) []string {
 	return words
 }
 
-// finder finds the longest matching table entry for base, the given OID
-// TODO: this scheme should be replaced by a radix tree
-func finder(base, oid string) (string, string, error) {
-	if strings.HasPrefix(oid, ".") {
-		oid = oid[1:]
-	}
-	i, ok := oidLookup[base]
-	if !ok {
-		return base, "(unknown)", fmt.Errorf("not found: %s", base)
-	}
-	tuple := table[i]
-	for k := i + tuple.Entries; k > i; k-- {
-		if strings.HasPrefix(oid, table[k].OID) {
-			return table[k].OID, table[k].Name, nil
-		}
-	}
-	return base, tuple.Name, nil
-}
-
 // Octets converts ascii octets into a byte array
 func stringToOctets(in string) []byte {
 	if strings.HasPrefix(in, ".") {
@@ -216,21 +164,6 @@ func octetsToString(in []byte) string {
 	return strings.Join(buf, ".")
 }
 
-// suffixValue returns a map the OID suffixes and their respective names for each column of table
-func suffixValue(lookup map[string]string) PDUFunc {
-	return func(root string, pdu gosnmp.SnmpPDU) error {
-		switch pdu.Type {
-		case gosnmp.OctetString:
-			lookup[pdu.Name[len(root)+2:]] = string(pdu.Value.([]byte))
-		case gosnmp.IPAddress:
-			lookup[pdu.Name[len(root)+2:]] = pdu.Value.(string)
-		default:
-			say("UNKNOWN TYPE: %x VALUE: %v\n", pdu.Type, pdu.Value)
-		}
-		return nil
-	}
-}
-
 // BulkColumns returns a WalkFunc that will process results from a bulkwalk
 func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender) (gosnmp.WalkFunc, error) {
 	filterNames := []*regexp.Regexp{}
@@ -242,21 +175,48 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender) (gosnmp.Wa
 		filterNames = append(filterNames, re)
 	}
 
+	// suffixValue returns a map the OID indexes and their respective names for each column of table
+	suffixValue := func(root string, lookup map[string]string) (gosnmp.WalkFunc, error) {
+		oid, err := GetOID(root)
+		if err != nil {
+			return nil, err
+		}
+		return func(pdu gosnmp.SnmpPDU) error {
+			switch pdu.Type {
+			case gosnmp.OctetString:
+				lookup[pdu.Name[len(oid)+2:]] = string(pdu.Value.([]byte))
+			case gosnmp.IPAddress:
+				lookup[pdu.Name[len(oid)+2:]] = pdu.Value.(string)
+			default:
+				say("UNKNOWN TYPE: %x VALUE: %v\n", pdu.Type, pdu.Value)
+			}
+			return nil
+		}, nil
+	}
 	columns := make(map[string]string)
-	aliases := make(map[string]string)
-	if err := BulkWalkAll(client, ifName, suffixValue(columns)); err != nil {
+	suffixFn, err := suffixValue(ifName, columns)
+	if err != nil {
 		return nil, err
 	}
-	if err := BulkWalkAll(client, ifAlias, suffixValue(aliases)); err != nil {
+	if err := BulkWalkAll(client, ifName, suffixFn); err != nil {
+		return nil, err
+	}
+
+	aliases := make(map[string]string)
+	suffixFn, err = suffixValue(ifAlias, aliases)
+	if err != nil {
+		return nil, err
+	}
+	if err := BulkWalkAll(client, ifAlias, suffixFn); err != nil {
 		return nil, err
 	}
 
 	return func(pdu gosnmp.SnmpPDU) error {
-		// find the oid of a table entry, if it exists
-		subOID, name, err := finder(crit.OID, pdu.Name)
-		if err != nil {
-			return err
+		subOID, v, ok := rtree.Root().LongestPrefix([]byte(pdu.Name))
+		if !ok {
+			return errors.Errorf("cannot find name for OID: %s", pdu.Name)
 		}
+		name := v.(string)
 
 		filtered := crit.Keep
 		for _, r := range filterNames {
@@ -275,7 +235,7 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender) (gosnmp.Wa
 		}
 
 		var column, alias string
-		suffix := pdu.Name[len(subOID)+2:]
+		suffix := pdu.Name[len(subOID)+1:]
 		group := oidStrings(suffix)
 
 		// interface names/aliases only apply to OIDs starting with 'if'
@@ -342,13 +302,13 @@ func GetOID(oid string) (string, error) {
 }
 
 // BulkWalkAll applies bulk walk results to fn once all values returned (synchronously)
-func BulkWalkAll(client *gosnmp.GoSNMP, oid string, fn PDUFunc) error {
+func BulkWalkAll(client *gosnmp.GoSNMP, oid string, fn gosnmp.WalkFunc) error {
 	pdus, err := client.BulkWalkAll(oid)
 	if err != nil {
 		return err
 	}
 	for _, pdu := range pdus {
-		if err := fn(oid, pdu); err != nil {
+		if err := fn(pdu); err != nil {
 			return err
 		}
 	}
@@ -364,7 +324,7 @@ func InterfaceNames(p Profile, fn func(string, string)) error {
 
 	defer client.Conn.Close()
 	return BulkWalkAll(client, ifName,
-		func(root string, pdu gosnmp.SnmpPDU) error {
+		func(pdu gosnmp.SnmpPDU) error {
 			switch pdu.Type {
 			case gosnmp.OctetString:
 				fn(pdu.Name, string(pdu.Value.([]byte)))
