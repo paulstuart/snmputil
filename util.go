@@ -280,7 +280,15 @@ func Sampler(p Profile, crit Criteria, sender Sender) error {
 	}
 	if sender == nil {
 		sender = func(name string, tags map[string]string, value interface{}, when time.Time) error {
-			fmt.Printf("Host:%s Name:%s Value:%v Tags:%v\n", client.Target, name, value, tags)
+			if tags != nil && len(tags) > 0 {
+				t := make([]string, 0, len(tags))
+				for k, v := range tags {
+					t = append(t, fmt.Sprintf("%s=%v", k, v))
+				}
+				fmt.Printf("Host:%s Name:%s Value:%v Tags:%s\n", client.Target, name, value, strings.Join(t, ","))
+			} else {
+				fmt.Printf("Host:%s Name:%s Value:%v\n", client.Target, name, value)
+			}
 			return nil
 		}
 	}
