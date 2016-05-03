@@ -146,12 +146,9 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 		fn := func(pdu gosnmp.SnmpPDU) error {
 			switch pdu.Type {
 			case gosnmp.OctetString:
-				lookup[pdu.Name[len(oid)+2:]] = string(pdu.Value.([]byte))
-			case gosnmp.IPAddress:
-				fmt.Printf("IP ADDR TYPE: %x VALUE: %v\n", pdu.Type, pdu.Value)
-				lookup[pdu.Name[len(oid)+2:]] = pdu.Value.(string)
+				lookup[pdu.Name[len(oid)+1:]] = string(pdu.Value.([]byte))
 			default:
-				logger.Printf("UNKNOWN TYPE: %x VALUE: %v\n", pdu.Type, pdu.Value)
+				logger.Printf("unknown type: %x value: %v\n", pdu.Type, pdu.Value)
 			}
 			return nil
 		}
@@ -179,12 +176,12 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 					filtered = false
 					break
 				}
-				logger.Printf("Omitting name: %s (%s)\n", name, subOID)
+				logger.Printf("omitting name: %s (%s)\n", name, subOID)
 				return nil
 			}
 		}
 		if filtered {
-			logger.Printf("Not keeping name: %s (%s)\n", name, subOID)
+			logger.Printf("not keeping name: %s (%s)\n", name, subOID)
 			return nil
 		}
 
