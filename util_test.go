@@ -1,13 +1,15 @@
 package snmputil
 
 import (
-	//	"fmt"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
 
 const (
-	testOID = "ifEntry"
+	testOID  = "ifEntry"
+	testFreq = 30
 )
 
 var (
@@ -15,36 +17,42 @@ var (
 		OID:  testOID,
 		Tags: testTags,
 	}
-	status = make(chan StatsChan)
 )
 
-func walkTest(t *testing.T, p Profile) {
+func walkTest(t *testing.T, p Profile, c Criteria) {
 	errFn := func(err error) {
-		t.Error(err)
+		if err != nil {
+			t.Error(err)
+		}
 	}
 	testSender := func(name string, tags map[string]string, value interface{}, when time.Time) error {
 		t.Logf("Name:%s Value:%v Time:%s Tags:%v\n", name, value, when, tags)
 		return nil
 	}
-	if err := Bulkwalker(p, testCrit, testSender, 30, errFn, status); err != nil {
+	if err := Bulkwalker(p, c, testFreq, testSender, errFn, logger); err != nil {
 		t.Error(err)
 	}
 }
 
 func TestSNMPv2(t *testing.T) {
-	walkTest(t, profileV2)
+	walkTest(t, profileV2, testCrit)
 }
 
 func TestSNMPv3(t *testing.T) {
-	walkTest(t, profileV3)
+	walkTest(t, profileV3, testCrit)
 }
 
 func TestFilters(t *testing.T) {
 	errFn := func(err error) {
-		t.Error(err)
+		if err != nil {
+			t.Error(err)
+		}
 	}
 	testSender := func(name string, tags map[string]string, value interface{}, when time.Time) error {
 		t.Logf("Name:%s Value:%v Time:%s Tags:%v\n", name, value, when, tags)
+		if strings.HasSuffix(name, "Time") {
+			return fmt.Errorf("not expect name with Time suffix: %s", name)
+		}
 		return nil
 	}
 	crit := Criteria{
@@ -52,7 +60,7 @@ func TestFilters(t *testing.T) {
 		Tags: testTags,
 	}
 	crit.Regexps = []string{".*Time"}
-	if err := Bulkwalker(profileV2, crit, testSender, 30, errFn, status); err != nil {
+	if err := Bulkwalker(profileV2, crit, testFreq, testSender, errFn, nil); err != nil {
 		t.Error(err)
 	}
 	time.Sleep(33 * time.Second)
@@ -64,7 +72,11 @@ func TestSample(t *testing.T) {
 		Tags:    testTags,
 		Regexps: []string{".*Time"},
 	}
-	if err := Sampler(profileV3, crit, nil); err != nil {
+	sender := func(name string, tags map[string]string, value interface{}, when time.Time) error {
+		t.Logf("Host:%s Name:%s Value:%v Tags:%v\n", tags["host"], name, value, tags)
+		return nil
+	}
+	if err := Sampler(profileV3, crit, sender); err != nil {
 		t.Error(err)
 	}
 }
@@ -72,4 +84,5 @@ func TestSample(t *testing.T) {
 func TestClose(t *testing.T) {
 	// give it a chance to respond with values
 	time.Sleep(5 * time.Second)
+	Quit()
 }

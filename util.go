@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"os"
 	"regexp"
@@ -24,9 +25,6 @@ import (
 var (
 	// Debug will log snmp debugging output if set
 	Debug *log.Logger
-
-	// Verbose will log output if set
-	Verbose *log.Logger
 
 	// lookupOID is a lookup table to find the dotted form of a symbolic name
 	lookupOID = make(map[string]string)
@@ -54,25 +52,8 @@ type Criteria struct {
 	Keep    bool              // keep if resulting name matches, otherwise omit
 }
 
-// SnmpStats tracks SNMP request activity
-type SnmpStats struct {
-	LastError time.Time
-	GetCnt    int64
-	ErrCnt    int64
-	Error     error
-}
-
-// StatsChan is used to request SnmpStats from a polling process
-type StatsChan chan SnmpStats
-
-// ErrFunc accepts SNMP errors for processing
+// ErrFunc processes error and may be nil if desired
 type ErrFunc func(error)
-
-func say(fmt string, args ...interface{}) {
-	if Verbose != nil {
-		Verbose.Printf(fmt, args...)
-	}
-}
 
 // numerical returns the parsed data type in its numeric form
 func numerical(s string) (interface{}, error) {
@@ -143,31 +124,11 @@ func oidStrings(in string) []string {
 	return words
 }
 
-// Octets converts ascii octets into a byte array
-func stringToOctets(in string) []byte {
-	if strings.HasPrefix(in, ".") {
-		in = in[1:]
-	}
-	bits := strings.Split(in, ".")
-	reply := make([]byte, len(bits))
-	for i, bit := range bits {
-		b, _ := strconv.Atoi(bit)
-		reply[i] = byte(b)
-	}
-	return reply
-}
-
-// Octets converts ascii octets into a byte array
-func octetsToString(in []byte) string {
-	buf := make([]string, len(in))
-	for i, bit := range in {
-		buf[i] = fmt.Sprintf("%d", bit)
-	}
-	return strings.Join(buf, ".")
-}
-
 // BulkColumns returns a gosnmp.WalkFunc that will process results from a bulkwalk
-func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender) (gosnmp.WalkFunc, error) {
+func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *log.Logger) (gosnmp.WalkFunc, error) {
+	if logger == nil {
+		logger = log.New(ioutil.Discard, "", 0)
+	}
 	// set up regexp filters
 	filterNames := []*regexp.Regexp{}
 	for _, n := range crit.Regexps {
@@ -190,7 +151,7 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender) (gosnmp.Wa
 				fmt.Printf("IP ADDR TYPE: %x VALUE: %v\n", pdu.Type, pdu.Value)
 				lookup[pdu.Name[len(oid)+2:]] = pdu.Value.(string)
 			default:
-				say("UNKNOWN TYPE: %x VALUE: %v\n", pdu.Type, pdu.Value)
+				logger.Printf("UNKNOWN TYPE: %x VALUE: %v\n", pdu.Type, pdu.Value)
 			}
 			return nil
 		}
@@ -218,12 +179,12 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender) (gosnmp.Wa
 					filtered = false
 					break
 				}
-				say("Omitting name: %s (%s)\n", name, subOID)
+				logger.Printf("Omitting name: %s (%s)\n", name, subOID)
 				return nil
 			}
 		}
 		if filtered {
-			say("Not keeping name: %s (%s)\n", name, subOID)
+			logger.Printf("Not keeping name: %s (%s)\n", name, subOID)
 			return nil
 		}
 
@@ -240,39 +201,38 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender) (gosnmp.Wa
 			column = makeString(strings.Split(suffix, "."))
 		}
 
-		say("OID:%s SUFFIX:%s COL:%s NAME:%s TYPE:%x VALUE:%v\n", crit.OID, suffix, column, name, pdu.Type, pdu.Value)
 		t := map[string]string{}
 		if len(column) > 0 {
-			t["Column"] = column
+			t["column"] = column
 		}
 		if len(alias) > 0 {
-			t["Alias"] = alias
+			t["alias"] = alias
 		}
 		if len(group) > 0 && len(group[0]) > 0 {
-			t["Grouping"] = group[0]
+			t["grouping"] = group[0]
 		}
 		if len(group) > 1 && len(group[1]) > 0 {
-			t["Member"] = group[1]
+			t["member"] = group[1]
 		}
 		if len(group) > 3 && len(group[1]) > 0 {
-			t["Element"] = group[2]
+			t["element"] = group[2]
 		}
 
-		// copy tag values so we don't modify original tags map
 		for k, v := range crit.Tags {
 			t[k] = v
 		}
+
 		switch pdu.Type {
 		case gosnmp.Integer, gosnmp.Counter32, gosnmp.Gauge32, gosnmp.TimeTicks, gosnmp.Counter64, gosnmp.Uinteger32:
 		case gosnmp.IPAddress:
 		case gosnmp.OctetString:
 			s := string(pdu.Value.([]uint8))
 			if n, err := numerical(s); err != nil {
-				say("%s (%x) - non numerical: %s\n", name, pdu.Type, s)
+				logger.Printf("%s (%x) - non numerical: %s\n", name, pdu.Type, s)
 				pdu.Value = n
 			}
 		default:
-			say(name, "%s - unsupported type: %x value: %v\n", name, pdu.Type, pdu.Value)
+			logger.Printf("%s - unsupported type: %x value: %v\n", name, pdu.Type, pdu.Value)
 			return nil
 		}
 		return sender(name, t, pdu.Value, time.Now())
@@ -308,24 +268,6 @@ func BulkWalkAll(client *gosnmp.GoSNMP, oid string, fn gosnmp.WalkFunc) error {
 	return nil
 }
 
-// InterfaceNames will apply the interface name and oid to the given fn
-func InterfaceNames(p Profile, fn func(string, string)) error {
-	client, err := NewClient(p)
-	if err != nil {
-		return err
-	}
-
-	defer client.Conn.Close()
-	return BulkWalkAll(client, ifName,
-		func(pdu gosnmp.SnmpPDU) error {
-			switch pdu.Type {
-			case gosnmp.OctetString:
-				fn(pdu.Name, string(pdu.Value.([]byte)))
-			}
-			return nil
-		})
-}
-
 // Sampler will do a bulkwalk on the device specified using the given Profile
 func Sampler(p Profile, crit Criteria, sender Sender) error {
 	client, err := NewClient(p)
@@ -342,7 +284,7 @@ func Sampler(p Profile, crit Criteria, sender Sender) error {
 			return nil
 		}
 	}
-	walker, err := BulkColumns(client, crit, sender)
+	walker, err := BulkColumns(client, crit, sender, nil)
 	if err != nil {
 		return err
 	}
@@ -350,7 +292,7 @@ func Sampler(p Profile, crit Criteria, sender Sender) error {
 }
 
 // Bulkwalker will do a bulkwalk on the device specified in the Profile
-func Bulkwalker(p Profile, crit Criteria, sender Sender, freq int, errFn ErrFunc, status chan StatsChan) error {
+func Bulkwalker(p Profile, crit Criteria, freq int, sender Sender, errFn ErrFunc, logger *log.Logger) error {
 	client, err := NewClient(p)
 	if err != nil {
 		return err
@@ -366,42 +308,27 @@ func Bulkwalker(p Profile, crit Criteria, sender Sender, freq int, errFn ErrFunc
 	if Debug != nil {
 		client.Logger = Debug
 	}
-	walker, err := BulkColumns(client, crit, sender)
+	walker, err := BulkColumns(client, crit, sender, logger)
 	if err != nil {
 		return err
 	}
-	go Poller(client, crit.OID, freq, walker, errFn, status)
+	go Poller(client, crit.OID, freq, walker, errFn)
 	return nil
 }
 
 // Poller will make snmp requests indefinitely
-func Poller(client *gosnmp.GoSNMP, oid string, freq int, walker gosnmp.WalkFunc, errFn ErrFunc, status chan StatsChan) {
-
-	stats := SnmpStats{}
+func Poller(client *gosnmp.GoSNMP, oid string, freq int, walker gosnmp.WalkFunc, errFn ErrFunc) {
 
 	c := time.Tick(time.Duration(freq) * time.Second)
 
-	walk := func() {
-		if err := client.BulkWalk(oid, walker); err != nil {
-			if errFn != nil {
-				errFn(err)
-			}
-			stats.ErrCnt++
-			stats.LastError = time.Now()
-		} else {
-			stats.GetCnt++
-		}
-	}
-
-	// poll immediately without waiting for first tick
-	walk()
-
 	for {
+		err := client.BulkWalk(oid, walker)
+		if errFn != nil {
+			errFn(err)
+		}
 		select {
 		case _ = <-c:
-			walk()
-		case s := <-status:
-			s <- stats
+			continue
 		case _ = <-done:
 			client.Conn.Close()
 			return
@@ -409,6 +336,7 @@ func Poller(client *gosnmp.GoSNMP, oid string, freq int, walker gosnmp.WalkFunc,
 	}
 }
 
+// Quit will exit all active Pollers
 func Quit() {
 	close(done)
 }
