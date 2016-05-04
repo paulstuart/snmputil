@@ -40,6 +40,12 @@ const (
 	ifAlias = ".1.3.6.1.2.1.31.1.1.1.18"
 )
 
+// Counter32 is 32 bit SNMP counter
+type Counter32 int32
+
+// Counter64 is 32 bit SNMP counter
+type Counter64 int64
+
 // Sender will send the interpreted PDU value to be saved or whathaveyou
 type Sender func(string, map[string]string, interface{}, time.Time) error
 
@@ -219,17 +225,43 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 		}
 
 		switch pdu.Type {
-		case gosnmp.Integer, gosnmp.Counter32, gosnmp.Gauge32, gosnmp.TimeTicks, gosnmp.Counter64, gosnmp.Uinteger32:
+		case gosnmp.Integer, gosnmp.Gauge32, gosnmp.TimeTicks, gosnmp.Uinteger32:
+		case gosnmp.Counter32:
+			switch pdu.Value.(type) {
+			case uint32:
+				pdu.Value = Counter32(pdu.Value.(uint32))
+			case int32:
+				pdu.Value = Counter32(pdu.Value.(int32))
+			case uint:
+				pdu.Value = Counter32(pdu.Value.(uint))
+			case int:
+				pdu.Value = Counter32(pdu.Value.(int))
+			default:
+				return errors.Errorf("invalid counter32 name:%s type:%T value:%v\n", name, pdu.Value, pdu.Value)
+			}
+		case gosnmp.Counter64:
+			switch pdu.Value.(type) {
+			case uint:
+				pdu.Value = Counter64(pdu.Value.(uint))
+			case int:
+				pdu.Value = Counter64(pdu.Value.(int))
+			case uint64:
+				pdu.Value = Counter64(pdu.Value.(uint64))
+			case int64:
+				pdu.Value = Counter64(pdu.Value.(int64))
+			case uint32:
+				pdu.Value = Counter64(pdu.Value.(uint32))
+			case int32:
+				pdu.Value = Counter64(pdu.Value.(int32))
+			default:
+				return errors.Errorf("invalid counter64 name:%s type:%T value:%v\n", name, pdu.Value, pdu.Value)
+			}
 		case gosnmp.IPAddress:
 		case gosnmp.OctetString:
-			s := string(pdu.Value.([]uint8))
-			if n, err := numerical(s); err != nil {
-				logger.Printf("%s (%x) - non numerical: %s\n", name, pdu.Type, s)
-				pdu.Value = n
-			}
+			// sometimes numbers are encoded as strings
+			pdu.Value, _ = numerical(string(pdu.Value.([]uint8)))
 		default:
-			logger.Printf("%s - unsupported type: %x value: %v\n", name, pdu.Type, pdu.Value)
-			return nil
+			return errors.Errorf("%s - unsupported type: %x value: %v\n", name, pdu.Type, pdu.Value)
 		}
 		return sender(name, t, pdu.Value, time.Now())
 	}, nil
