@@ -350,6 +350,7 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 
 		switch pdu.Type {
 		case gosnmp.Integer, gosnmp.Gauge32, gosnmp.TimeTicks, gosnmp.Uinteger32:
+		case gosnmp.IPAddress, gosnmp.ObjectIdentifier:
 		case gosnmp.Counter32:
 			switch pdu.Value.(type) {
 			case uint32:
@@ -380,7 +381,6 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 			default:
 				return errors.Errorf("invalid counter64 name:%s type:%T value:%v\n", name, pdu.Value, pdu.Value)
 			}
-		case gosnmp.IPAddress:
 		case gosnmp.OctetString:
 			// sometimes numbers are encoded as strings
 			pdu.Value, _ = numerical(string(pdu.Value.([]uint8)))
