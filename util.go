@@ -23,8 +23,7 @@ import (
 )
 
 var (
-	// Debug will log snmp debugging output if set
-	Debug *log.Logger
+	debugging *log.Logger
 
 	// lookupOID is a lookup table to find the dotted form of a symbolic name
 	lookupOID = make(map[string]string)
@@ -66,8 +65,8 @@ func numerical(s string) (interface{}, error) {
 	return s, fmt.Errorf("not a number")
 }
 
-// LoadOIDs reads a file of OIDs and their symbolic names
-func LoadOIDs(in io.Reader) error {
+// loadOIDs reads in a stream of OIDs and their symbolic names
+func loadOIDs(in io.Reader) error {
 	scanner := bufio.NewScanner(in)
 	for scanner.Scan() {
 		f := strings.Fields(scanner.Text())
@@ -91,7 +90,7 @@ func LoadOIDFile(filename string) error {
 		return err
 	}
 	defer f.Close()
-	return LoadOIDs(f)
+	return loadOIDs(f)
 }
 
 // makeString converts ascii octets into a string
@@ -310,8 +309,8 @@ func Bulkwalker(p Profile, crit Criteria, freq int, sender Sender, errFn ErrFunc
 		crit.Tags = make(map[string]string)
 	}
 	crit.Tags["host"] = client.Target
-	if Debug != nil {
-		client.Logger = Debug
+	if debugLogger != nil {
+		client.Logger = debugLogger
 	}
 	walker, err := BulkColumns(client, crit, sender, logger)
 	if err != nil {
@@ -344,4 +343,9 @@ func Poller(client *gosnmp.GoSNMP, oid string, freq int, walker gosnmp.WalkFunc,
 // Quit will exit all active Pollers
 func Quit() {
 	close(done)
+}
+
+// DebugLogger will log all SNMP debug data to the given logger
+func DebugLogger(logger *log.Logger) {
+	debugLogger = logger
 }

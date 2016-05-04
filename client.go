@@ -17,6 +17,10 @@ const (
 	defaultPort = 161
 )
 
+var (
+	debugLogger *log.Logger
+)
+
 // Profile contains the settings needed to establish an SNMP connection
 type Profile struct {
 	Host, Community, Version string
@@ -131,8 +135,8 @@ func NewClient(p Profile) (*gosnmp.GoSNMP, error) {
 		return nil, errors.New("invalid snmp version")
 	}
 
-	if Debug != nil {
-		client.Logger = Debug
+	if debugLogger != nil {
+		client.Logger = debugLogger
 	}
 
 	return client, client.Connect()
