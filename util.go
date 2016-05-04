@@ -235,8 +235,8 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 	}, nil
 }
 
-// GetOID will return the OID representing name
-func GetOID(oid string) (string, error) {
+// getOID will return the OID representing name
+func getOID(oid string) (string, error) {
 	if strings.HasPrefix(oid, ".") {
 		oid = oid[1:]
 	}
@@ -270,7 +270,7 @@ func Sampler(p Profile, crit Criteria, sender Sender) error {
 	if err != nil {
 		return err
 	}
-	crit.OID, err = GetOID(crit.OID)
+	crit.OID, err = getOID(crit.OID)
 	if err != nil {
 		return err
 	}
@@ -301,7 +301,7 @@ func Bulkwalker(p Profile, crit Criteria, freq int, sender Sender, errFn ErrFunc
 	if err != nil {
 		return err
 	}
-	crit.OID, err = GetOID(crit.OID)
+	crit.OID, err = getOID(crit.OID)
 	if err != nil {
 		return err
 	}
