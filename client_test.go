@@ -1,3 +1,7 @@
+// Copyright 2016 Paul Stuart. All rights reserved.
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file.
+
 package snmputil
 
 import (
@@ -35,12 +39,13 @@ var (
 	logger *log.Logger
 )
 
-func envSet(name string, value *string) {
+func envStr(name string, value *string) {
 	if env := os.Getenv(name); len(env) > 0 && value != nil {
 		*value = env
 	}
 }
-func intSet(name string, value *int) {
+
+func envInt(name string, value *int) {
 	if env := os.Getenv(name); len(env) > 0 && value != nil {
 		v, err := strconv.Atoi(env)
 		if err != nil {
@@ -58,12 +63,12 @@ func init() {
 		logger = log.New(os.Stderr, "", 0)
 	}
 
-	envSet("SNMP_HOST", &testHost)
-	envSet("SNMP_COMMUNITY", &testCommunity)
-	envSet("SNMP_USER", &testUser)
-	envSet("SNMP_PASSWORD", &testPassword)
-	intSet("SNMP_TIMEOUT", &testTimeout)
-	intSet("SNMP_RETRIES", &testRetries)
+	envStr("SNMP_HOST", &testHost)
+	envStr("SNMP_COMMUNITY", &testCommunity)
+	envStr("SNMP_USER", &testUser)
+	envStr("SNMP_PASSWORD", &testPassword)
+	envInt("SNMP_TIMEOUT", &testTimeout)
+	envInt("SNMP_RETRIES", &testRetries)
 
 	profileV2 = Profile{
 		Host:      testHost,
