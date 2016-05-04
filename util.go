@@ -55,6 +55,8 @@ type Criteria struct {
 	Tags    map[string]string // any additional tags to associate
 	Regexps []string          // filter resulting entries
 	Keep    bool              // keep if resulting name matches, otherwise omit
+	OIDTag  bool              // add OID as a tag
+	Aliases map[string]string // optional column aliases
 }
 
 // ErrFunc processes error and may be nil if desired
@@ -107,6 +109,122 @@ func makeString(bits []string) string {
 		chars[i] = byte(n)
 	}
 	return string(chars)
+}
+
+// Recipe describes how to "cook" the data
+type Recipe struct {
+	Rename string // new name to give data (if set)
+	Orig   bool   // send original data as well if set
+	Rate   bool   // calculate rate instead of difference
+}
+
+// Recipies is a map of recipies to apply calculations to data
+type Recipies map[string]Recipe
+
+type dataPoint struct {
+	value interface{}
+	when  time.Time
+}
+
+func normalize(value interface{}) (uint64, error) {
+	switch value.(type) {
+	case uint:
+		return uint64(value.(uint)), nil
+	case int:
+		return uint64(value.(int)), nil
+	case uint64:
+		return uint64(value.(uint64)), nil
+	case int64:
+		return uint64(value.(int64)), nil
+	case uint32:
+		return uint64(value.(uint32)), nil
+	case int32:
+		return uint64(value.(int32)), nil
+	case Counter32:
+		return uint64(value.(Counter32)), nil
+	case Counter64:
+		return uint64(value.(Counter64)), nil
+	default:
+		return 0, errors.Errorf("invalid cooked s type:%T value:%v\n", value, value)
+	}
+}
+
+// CalcSender will create a sender that optionally "cooks" the data
+// It requires OIDTag to be true in the snmp criteria to track state
+//
+// A example:
+//    r := snmp.Recipies{
+//	   "ifHCInOctets": {"OCTETS_PER_SECOND", true, true},
+//    }
+//    sender := snmp.SampleSender(hostname)
+//    sender = snmp.StripTags(sender, []string{"oid"})
+//    sender = snmp.CalcSender(sender, r)
+//    Bulkwalker(profile, criteria, freq, sender, nil, nil) error {
+//
+func CalcSender(sender Sender, cook Recipies) Sender {
+	saved := make(map[string]dataPoint)
+	return func(name string, tags map[string]string, value interface{}, when time.Time) error {
+		if recipe, ok := cook[name]; ok {
+			oid, ok := tags["oid"]
+			if !ok {
+				return errors.Errorf("no OID saved for calculation on: %s", name)
+			}
+
+			var err error
+			if prior, ok := saved[oid]; ok {
+				this, err := normalize(value)
+				if err != nil {
+					return err
+				}
+				that, err := normalize(prior.value)
+				if err != nil {
+					return err
+				}
+
+				// If the new value is *less* than the prior it was either
+				// a counter wrap or a device reset.
+				// Because device resets happen, we should assume the lesser
+				// value is due to that rather than get a possibly huge spike.
+				delta := this
+				if this >= that {
+					delta -= that
+				}
+
+				var aka string
+				if len(recipe.Rename) > 0 {
+					aka = recipe.Rename
+				} else {
+					aka = name
+				}
+				if recipe.Rate {
+					since := when.Sub(prior.when).Seconds()
+					if since > 0 {
+						rate := float64(delta) / since
+						err = sender(aka, tags, rate, when)
+					}
+				} else {
+					err = sender(aka, tags, delta, when)
+				}
+			}
+
+			saved[oid] = dataPoint{value, when}
+			if recipe.Orig {
+				return sender(name, tags, value, when)
+			}
+			return err
+		}
+		return sender(name, tags, value, when)
+	}
+}
+
+// StripSender will create a sender that strips matching tags
+func StripSender(sender Sender, taglist []string) Sender {
+	return func(name string, tags map[string]string, value interface{}, when time.Time) error {
+		for _, tag := range taglist {
+			delete(tags, tag)
+		}
+		return sender(name, tags, value, when)
+	}
 }
 
 // oidStrings converts ascii octets into an array of words
@@ -165,6 +283,9 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 	if err := suffixValue(ifAlias, aliases); err != nil {
 		return nil, err
 	}
+	for k, v := range crit.Aliases {
+		aliases[k] = v
+	}
 
 	// our handler that will process each returned SNMP packet
 	return func(pdu gosnmp.SnmpPDU) error {
@@ -222,6 +343,9 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 
 		for k, v := range crit.Tags {
 			t[k] = v
+		}
+		if crit.OIDTag {
+			t["oid"] = pdu.Name
 		}
 
 		switch pdu.Type {
@@ -296,6 +420,22 @@ func BulkWalkAll(client *gosnmp.GoSNMP, oid string, fn gosnmp.WalkFunc) error {
 	return nil
 }
 
+// SampleSender returns a Sender that will print out data sent to it
+func SampleSender(host string) Sender {
+	return func(name string, tags map[string]string, value interface{}, when time.Time) error {
+		if tags != nil && len(tags) > 0 {
+			t := make([]string, 0, len(tags))
+			for k, v := range tags {
+				t = append(t, fmt.Sprintf("%s=%v", k, v))
+			}
+			fmt.Printf("Host:%s Name:%s Value:%v (%T) Tags:%s\n", host, name, value, value, strings.Join(t, ","))
+		} else {
+			fmt.Printf("Host:%s Name:%s Value:%v (%T)\n", host, name, value, value)
+		}
+		return nil
+	}
+}
+
 // Sampler will do a bulkwalk on the device specified using the given Profile
 func Sampler(p Profile, crit Criteria, sender Sender) error {
 	client, err := NewClient(p)
@@ -307,18 +447,7 @@ func Sampler(p Profile, crit Criteria, sender Sender) error {
 		return err
 	}
 	if sender == nil {
-		sender = func(name string, tags map[string]string, value interface{}, when time.Time) error {
-			if tags != nil && len(tags) > 0 {
-				t := make([]string, 0, len(tags))
-				for k, v := range tags {
-					t = append(t, fmt.Sprintf("%s=%v", k, v))
-				}
-				fmt.Printf("Host:%s Name:%s Value:%v (%T) Tags:%s\n", client.Target, name, value, value, strings.Join(t, ","))
-			} else {
-				fmt.Printf("Host:%s Name:%s Value:%v (%T)\n", client.Target, name, value, value)
-			}
-			return nil
-		}
+		sender = SampleSender(client.Target)
 	}
 	walker, err := BulkColumns(client, crit, sender, nil)
 	if err != nil {
