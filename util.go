@@ -41,10 +41,10 @@ const (
 )
 
 // Counter32 is 32 bit SNMP counter
-type Counter32 int32
+type Counter32 uint32
 
 // Counter64 is 32 bit SNMP counter
-type Counter64 int64
+type Counter64 uint64
 
 // Sender will send the interpreted PDU value to be saved or whathaveyou
 type Sender func(string, map[string]string, interface{}, time.Time) error
@@ -313,9 +313,9 @@ func Sampler(p Profile, crit Criteria, sender Sender) error {
 				for k, v := range tags {
 					t = append(t, fmt.Sprintf("%s=%v", k, v))
 				}
-				fmt.Printf("Host:%s Name:%s Value:%v Tags:%s\n", client.Target, name, value, strings.Join(t, ","))
+				fmt.Printf("Host:%s Name:%s Value:%v (%T) Tags:%s\n", client.Target, name, value, value, strings.Join(t, ","))
 			} else {
-				fmt.Printf("Host:%s Name:%s Value:%v\n", client.Target, name, value)
+				fmt.Printf("Host:%s Name:%s Value:%v (%T)\n", client.Target, name, value, value)
 			}
 			return nil
 		}
