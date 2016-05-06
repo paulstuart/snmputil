@@ -7,6 +7,7 @@ package snmputil
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -36,8 +37,9 @@ var (
 )
 
 const (
-	ifName  = ".1.3.6.1.2.1.31.1.1.1.1"
-	ifAlias = ".1.3.6.1.2.1.31.1.1.1.18"
+	ifName       = ".1.3.6.1.2.1.31.1.1.1.1"
+	ifAlias      = ".1.3.6.1.2.1.31.1.1.1.18"
+	ifOperStatus = ".1.3.6.1.2.1.2.2.1.8"
 )
 
 // Counter32 is 32 bit SNMP counter
@@ -49,29 +51,17 @@ type Counter64 uint64
 // Sender will send the interpreted PDU value to be saved or whathaveyou
 type Sender func(string, map[string]string, interface{}, time.Time) error
 
-// Criteria specifies what is to query and what to keep
+// Criteria specifies what to query and what to keep
 type Criteria struct {
 	OID     string            // OID can be dotted string or symbolic name
 	Tags    map[string]string // any additional tags to associate
-	Regexps []string          // filter resulting entries
-	Keep    bool              // keep if resulting name matches, otherwise omit
-	OIDTag  bool              // add OID as a tag
 	Aliases map[string]string // optional column aliases
+	OIDTag  bool              // add OID as a tag
+	Refresh int               // how often to refresh column data (in seconds)
 }
 
 // ErrFunc processes error and may be nil if desired
 type ErrFunc func(error)
-
-// numerical returns the parsed data type in its numeric form
-func numerical(s string) (interface{}, error) {
-	if f, err := strconv.ParseFloat(s, 64); err == nil {
-		return f, nil
-	}
-	if i, err := strconv.ParseInt(s, 0, 64); err == nil {
-		return i, nil
-	}
-	return s, fmt.Errorf("not a number")
-}
 
 // loadOIDs reads in a stream of OIDs and their symbolic names
 func loadOIDs(in io.Reader) error {
@@ -108,7 +98,7 @@ func makeString(bits []string) string {
 		n, _ := strconv.Atoi(bit)
 		chars[i] = byte(n)
 	}
-	return string(chars)
+	return cleanString(chars)
 }
 
 // Recipe describes how to "cook" the data
@@ -126,6 +116,7 @@ type dataPoint struct {
 	when  time.Time
 }
 
+// normalize counter datatype
 func normalize(value interface{}) (uint64, error) {
 	switch value.(type) {
 	case uint:
@@ -145,7 +136,7 @@ func normalize(value interface{}) (uint64, error) {
 	case Counter64:
 		return uint64(value.(Counter64)), nil
 	default:
-		return 0, errors.Errorf("invalid cooked s type:%T value:%v\n", value, value)
+		return 0, errors.Errorf("invalid cooked data type:%T value:%v\n", value, value)
 	}
 }
 
@@ -227,6 +218,34 @@ func StripSender(sender Sender, taglist []string) Sender {
 	}
 }
 
+// NormalSender will create a sender that normalizes datatypes
+func NormalSender(sender Sender) Sender {
+	return func(name string, tags map[string]string, value interface{}, when time.Time) error {
+		var v interface{}
+		switch value.(type) {
+		case uint:
+			v = uint64(value.(uint))
+		case int:
+			v = uint64(value.(int))
+		case uint64:
+			v = uint64(value.(uint64))
+		case int64:
+			v = uint64(value.(int64))
+		case uint32:
+			v = uint64(value.(uint32))
+		case int32:
+			v = uint64(value.(int32))
+		case Counter32:
+			v = uint64(value.(Counter32))
+		case Counter64:
+			v = uint64(value.(Counter64))
+		default:
+			v = value
+		}
+		return sender(name, tags, v, when)
+	}
+}
+
 // oidStrings converts ascii octets into an array of words
 func oidStrings(in string) []string {
 	words := []string{}
@@ -240,11 +259,74 @@ func oidStrings(in string) []string {
 		if end > len(bits) {
 			end = len(bits)
 		}
-		word := makeString(bits[i+1 : end])
-		words = append(words, word)
+		words = append(words, makeString(bits[i+1:end]))
 		i += cnt
 	}
 	return words
+}
+
+// cleanString creates a printable string
+func cleanString(in []byte) string {
+	r := bytes.Runes(in)
+	acc := make([]rune, 0, len(r))
+	for _, c := range r {
+		if strconv.IsPrint(c) {
+			acc = append(acc, c)
+		}
+	}
+	return string(acc)
+}
+
+// pduType verifies and normalizes the pdu data
+func pduType(pdu gosnmp.SnmpPDU) (interface{}, error) {
+	switch pdu.Type {
+	case gosnmp.Integer, gosnmp.Gauge32, gosnmp.TimeTicks, gosnmp.Uinteger32:
+	case gosnmp.IPAddress, gosnmp.ObjectIdentifier:
+	case gosnmp.Counter32:
+		switch pdu.Value.(type) {
+		case uint32:
+			return Counter32(pdu.Value.(uint32)), nil
+		case int32:
+			return Counter32(pdu.Value.(int32)), nil
+		case uint:
+			return Counter32(pdu.Value.(uint)), nil
+		case int:
+			return Counter32(pdu.Value.(int)), nil
+		default:
+			return pdu.Value, errors.Errorf("invalid counter32 type:%T pdu.Value:%v\n", pdu.Value, pdu.Value)
+		}
+	case gosnmp.Counter64:
+		switch pdu.Value.(type) {
+		case uint:
+			return Counter64(pdu.Value.(uint)), nil
+		case int:
+			return Counter64(pdu.Value.(int)), nil
+		case uint64:
+			return Counter64(pdu.Value.(uint64)), nil
+		case int64:
+			return Counter64(pdu.Value.(int64)), nil
+		case uint32:
+			return Counter64(pdu.Value.(uint32)), nil
+		case int32:
+			return Counter64(pdu.Value.(int32)), nil
+		default:
+			return pdu.Value, errors.Errorf("invalid counter64 type:%T pdu.Value:%v\n", pdu.Value, pdu.Value)
+		}
+	case gosnmp.OctetString:
+		s := cleanString([]byte(pdu.Value.([]uint8)))
+
+		// sometimes numbers are encoded as strings
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			return f, nil
+		}
+		if i, err := strconv.ParseInt(s, 0, 64); err == nil {
+			return i, nil
+		}
+		return s, nil
+	default:
+		return pdu.Value, errors.Errorf("unsupported type: %x (%T), pdu.Value: %v\n", pdu.Type, pdu.Value, pdu.Value)
+	}
+	return pdu.Value, nil
 }
 
 // BulkColumns returns a gosnmp.WalkFunc that will process results from a bulkwalk
@@ -252,15 +334,27 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 	if logger == nil {
 		logger = log.New(ioutil.Discard, "", 0)
 	}
-	// set up regexp filters
-	filterNames := []*regexp.Regexp{}
-	for _, n := range crit.Regexps {
-		re, err := regexp.Compile(n)
-		if err != nil {
-			return nil, err
-		}
-		filterNames = append(filterNames, re)
+
+	if crit.Tags == nil {
+		crit.Tags = make(map[string]string)
 	}
+	crit.Tags["host"] = client.Target
+
+	// TODO: how to manage updating for long running process
+
+	// check for active interfaces
+	enabled := make(map[string]struct{})
+	status := func() error {
+		oid := ifOperStatus
+		fn := func(pdu gosnmp.SnmpPDU) error {
+			if pdu.Type == gosnmp.Integer && pdu.Value.(int) == 1 {
+				enabled[pdu.Name[len(oid)+1:]] = struct{}{}
+			}
+			return nil
+		}
+		return BulkWalkAll(client, oid, fn)
+	}
+	status()
 
 	// get interface column names and aliases
 	columns := make(map[string]string)
@@ -269,7 +363,7 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 		fn := func(pdu gosnmp.SnmpPDU) error {
 			switch pdu.Type {
 			case gosnmp.OctetString:
-				lookup[pdu.Name[len(oid)+1:]] = string(pdu.Value.([]byte))
+				lookup[pdu.Name[len(oid)+1:]] = cleanString(pdu.Value.([]byte))
 			default:
 				logger.Printf("unknown type: %x value: %v\n", pdu.Type, pdu.Value)
 			}
@@ -283,43 +377,26 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 	if err := suffixValue(ifAlias, aliases); err != nil {
 		return nil, err
 	}
+	// add manually assigned aliases
 	for k, v := range crit.Aliases {
 		aliases[k] = v
 	}
 
-	// our handler that will process each returned SNMP packet
-	return func(pdu gosnmp.SnmpPDU) error {
-		subOID, v, ok := rtree.Root().LongestPrefix([]byte(pdu.Name))
-		if !ok {
-			return errors.Errorf("cannot find name for OID: %s", pdu.Name)
-		}
-		name := v.(string)
-
-		filtered := crit.Keep
-		for _, r := range filterNames {
-			if r.MatchString(name) {
-				if crit.Keep {
-					filtered = false
-					break
-				}
-				logger.Printf("omitting name: %s (%s)\n", name, subOID)
-				return nil
-			}
-		}
-		if filtered {
-			logger.Printf("not keeping name: %s (%s)\n", name, subOID)
-			return nil
-		}
-
+	// apply tags to resulting value
+	pduTags := func(name, suffix string) (map[string]string, bool) {
 		var column, alias string
-		suffix := pdu.Name[len(subOID)+1:]
-		group := oidStrings(suffix)
 
 		// interface names/aliases only apply to OIDs starting with 'if'
-		if strings.HasPrefix(name, "if") {
+		// TODO: there should be a more "formal" way of applying
+		if strings.HasPrefix(name, "if") && len(suffix) > 0 {
+			if _, ok := enabled[suffix]; !ok {
+				return nil, false
+			}
 			column = columns[suffix]
 			alias = aliases[suffix]
 		}
+
+		group := oidStrings(suffix)
 		if len(group) == 0 && len(column) == 0 && suffix != "0" {
 			column = makeString(strings.Split(suffix, "."))
 		}
@@ -340,7 +417,26 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 		if len(group) > 3 && len(group[1]) > 0 {
 			t["element"] = group[2]
 		}
+		return t, true
+	}
 
+	// our handler that will process each returned SNMP packet
+	return func(pdu gosnmp.SnmpPDU) error {
+		now := time.Now()
+		sub, v, ok := rtree.Root().LongestPrefix([]byte(pdu.Name))
+		if !ok {
+			return errors.Errorf("cannot find name for OID: %s", pdu.Name)
+		}
+		subOID := string(sub)
+		name := v.(string)
+		var suffix string
+		if len(subOID) < len(pdu.Name) {
+			suffix = pdu.Name[len(subOID)+1:]
+		}
+		t, ok := pduTags(name, suffix)
+		if !ok {
+			return nil
+		}
 		for k, v := range crit.Tags {
 			t[k] = v
 		}
@@ -348,60 +444,52 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 			t["oid"] = pdu.Name
 		}
 
-		switch pdu.Type {
-		case gosnmp.Integer, gosnmp.Gauge32, gosnmp.TimeTicks, gosnmp.Uinteger32:
-		case gosnmp.IPAddress, gosnmp.ObjectIdentifier:
-		case gosnmp.Counter32:
-			switch pdu.Value.(type) {
-			case uint32:
-				pdu.Value = Counter32(pdu.Value.(uint32))
-			case int32:
-				pdu.Value = Counter32(pdu.Value.(int32))
-			case uint:
-				pdu.Value = Counter32(pdu.Value.(uint))
-			case int:
-				pdu.Value = Counter32(pdu.Value.(int))
-			default:
-				return errors.Errorf("invalid counter32 name:%s type:%T value:%v\n", name, pdu.Value, pdu.Value)
-			}
-		case gosnmp.Counter64:
-			switch pdu.Value.(type) {
-			case uint:
-				pdu.Value = Counter64(pdu.Value.(uint))
-			case int:
-				pdu.Value = Counter64(pdu.Value.(int))
-			case uint64:
-				pdu.Value = Counter64(pdu.Value.(uint64))
-			case int64:
-				pdu.Value = Counter64(pdu.Value.(int64))
-			case uint32:
-				pdu.Value = Counter64(pdu.Value.(uint32))
-			case int32:
-				pdu.Value = Counter64(pdu.Value.(int32))
-			default:
-				return errors.Errorf("invalid counter64 name:%s type:%T value:%v\n", name, pdu.Value, pdu.Value)
-			}
-		case gosnmp.OctetString:
-			// sometimes numbers are encoded as strings
-			pdu.Value, _ = numerical(string(pdu.Value.([]uint8)))
-		default:
-			return errors.Errorf("%s - unsupported type: %x value: %v\n", name, pdu.Type, pdu.Value)
+		value, err := pduType(pdu)
+		if err != nil {
+			return errors.Wrapf(err, "bad bulk name:%s", name)
 		}
-		return sender(name, t, pdu.Value, time.Now())
+		return sender(name, t, value, now)
+	}, nil
+}
+
+// RegexpSender returns a Sender that filters results based on name
+func RegexpSender(sender Sender, regexps []string, keep bool) (Sender, error) {
+	filterNames := []*regexp.Regexp{}
+	for _, n := range regexps {
+		re, err := regexp.Compile(n)
+		if err != nil {
+			return nil, errors.Wrapf(err, "pattern: %s", n)
+		}
+		filterNames = append(filterNames, re)
+	}
+
+	return func(name string, tags map[string]string, value interface{}, when time.Time) error {
+		filtered := keep
+		for _, r := range filterNames {
+			if r.MatchString(name) {
+				if keep {
+					filtered = false
+					break
+				}
+				return nil
+			}
+		}
+		if filtered {
+			return nil
+		}
+
+		return sender(name, tags, value, when)
 	}, nil
 }
 
 // getOID will return the OID representing name
 func getOID(oid string) (string, error) {
 	if strings.HasPrefix(oid, ".") {
-		oid = oid[1:]
-	}
-	if strings.HasPrefix(oid, "1.") {
 		return oid, nil
 	}
 	fixed, ok := lookupOID[oid]
 	if !ok {
-		return oid, fmt.Errorf("no OID found for %s", oid)
+		return oid, errors.Errorf("no OID found for %s", oid)
 	}
 	return fixed, nil
 }
@@ -420,17 +508,27 @@ func BulkWalkAll(client *gosnmp.GoSNMP, oid string, fn gosnmp.WalkFunc) error {
 	return nil
 }
 
-// SampleSender returns a Sender that will print out data sent to it
-func SampleSender(host string) Sender {
+// DebugSender returns a Sender that will print out data sent to it
+func DebugSender(sender Sender, logger *log.Logger) Sender {
+	if logger == nil {
+		logger = log.New(os.Stdout, "", 0)
+	}
 	return func(name string, tags map[string]string, value interface{}, when time.Time) error {
+		host := tags["host"]
 		if tags != nil && len(tags) > 0 {
 			t := make([]string, 0, len(tags))
 			for k, v := range tags {
+				if k == "host" {
+					continue
+				}
 				t = append(t, fmt.Sprintf("%s=%v", k, v))
 			}
-			fmt.Printf("Host:%s Name:%s Value:%v (%T) Tags:%s\n", host, name, value, value, strings.Join(t, ","))
+			logger.Printf("Host:%s Name:%s Value:%v (%T) Tags:%s\n", host, name, value, value, strings.Join(t, ","))
 		} else {
-			fmt.Printf("Host:%s Name:%s Value:%v (%T)\n", host, name, value, value)
+			logger.Printf("Host:%s Name:%s Value:%v (%T)\n", host, name, value, value)
+		}
+		if sender != nil {
+			return sender(name, tags, value, when)
 		}
 		return nil
 	}
@@ -447,7 +545,7 @@ func Sampler(p Profile, crit Criteria, sender Sender) error {
 		return err
 	}
 	if sender == nil {
-		sender = SampleSender(client.Target)
+		sender = DebugSender(nil, nil)
 	}
 	walker, err := BulkColumns(client, crit, sender, nil)
 	if err != nil {
@@ -466,10 +564,6 @@ func Bulkwalker(p Profile, crit Criteria, freq int, sender Sender, errFn ErrFunc
 	if err != nil {
 		return err
 	}
-	if crit.Tags == nil {
-		crit.Tags = make(map[string]string)
-	}
-	crit.Tags["host"] = client.Target
 	if debugLogger != nil {
 		client.Logger = debugLogger
 	}

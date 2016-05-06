@@ -55,7 +55,7 @@ func TestFilters(t *testing.T) {
 	testSender := func(name string, tags map[string]string, value interface{}, when time.Time) error {
 		t.Logf("Name:%s Value:%v Time:%s Tags:%v\n", name, value, when, tags)
 		if strings.HasSuffix(name, "Time") {
-			return fmt.Errorf("not expect name with Time suffix: %s", name)
+			return fmt.Errorf("did not expect name with Time suffix: %s", name)
 		}
 		return nil
 	}
@@ -63,7 +63,9 @@ func TestFilters(t *testing.T) {
 		OID:  "system",
 		Tags: testTags,
 	}
-	crit.Regexps = []string{".*Time"}
+	//crit.Regexps = []string{".*Time"}
+	regexps := []string{".*Time"}
+	testSender, _ = RegexpSender(testSender, regexps, false)
 	if err := Bulkwalker(profileV2, crit, testFreq, testSender, errFn, nil); err != nil {
 		t.Error(err)
 	}
