@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	radix "github.com/hashicorp/go-immutable-radix"
@@ -54,9 +55,11 @@ type Sender func(string, map[string]string, interface{}, time.Time) error
 // Criteria specifies what to query and what to keep
 type Criteria struct {
 	OID     string            // OID can be dotted string or symbolic name
+	Index   string            // OID of table index
 	Tags    map[string]string // any additional tags to associate
 	Aliases map[string]string // optional column aliases
 	OIDTag  bool              // add OID as a tag
+	Freq    int               // how often to poll for data (in seconds)
 	Refresh int               // how often to refresh column data (in seconds)
 }
 
@@ -224,21 +227,21 @@ func NormalSender(sender Sender) Sender {
 		var v interface{}
 		switch value.(type) {
 		case uint:
-			v = uint64(value.(uint))
+			v = int64(value.(uint))
 		case int:
-			v = uint64(value.(int))
+			v = int64(value.(int))
 		case uint64:
-			v = uint64(value.(uint64))
+			v = int64(value.(uint64))
 		case int64:
-			v = uint64(value.(int64))
+			v = int64(value.(int64))
 		case uint32:
-			v = uint64(value.(uint32))
+			v = int64(value.(uint32))
 		case int32:
-			v = uint64(value.(int32))
+			v = int64(value.(int32))
 		case Counter32:
-			v = uint64(value.(Counter32))
+			v = int64(value.(Counter32))
 		case Counter64:
-			v = uint64(value.(Counter64))
+			v = int64(value.(Counter64))
 		default:
 			v = value
 		}
@@ -335,79 +338,125 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 		logger = log.New(ioutil.Discard, "", 0)
 	}
 
+	var index string
+	var err error
+	if len(crit.Index) > 0 {
+		if index, err = getOID(crit.Index); err != nil {
+			return nil, err
+		}
+	}
+
 	if crit.Tags == nil {
 		crit.Tags = make(map[string]string)
 	}
 	crit.Tags["host"] = client.Target
 
-	// TODO: how to manage updating for long running process
+	var m sync.Mutex
 
-	// check for active interfaces
-	enabled := make(map[string]struct{})
-	status := func() error {
-		oid := ifOperStatus
-		fn := func(pdu gosnmp.SnmpPDU) error {
-			if pdu.Type == gosnmp.Integer && pdu.Value.(int) == 1 {
-				enabled[pdu.Name[len(oid)+1:]] = struct{}{}
-			}
-			return nil
-		}
-		return BulkWalkAll(client, oid, fn)
-	}
-	status()
-
-	// get interface column names and aliases
+	// Interface info
 	columns := make(map[string]string)
 	aliases := make(map[string]string)
+	enabled := make(map[string]bool)
+
+	descriptions := make(map[string]string)
+
+	// get interface column names and aliases
 	suffixValue := func(oid string, lookup map[string]string) error {
 		fn := func(pdu gosnmp.SnmpPDU) error {
 			switch pdu.Type {
 			case gosnmp.OctetString:
 				lookup[pdu.Name[len(oid)+1:]] = cleanString(pdu.Value.([]byte))
 			default:
-				logger.Printf("unknown type: %x value: %v\n", pdu.Type, pdu.Value)
+				return errors.Errorf("unknown type: %x value: %v\n", pdu.Type, pdu.Value)
 			}
 			return nil
 		}
 		return BulkWalkAll(client, oid, fn)
 	}
-	if err := suffixValue(ifName, columns); err != nil {
+
+	// check for active interfaces
+	opStatus := func(pdu gosnmp.SnmpPDU) error {
+		const prefix = len(ifOperStatus) + 1
+		if pdu.Type == gosnmp.Integer {
+			enabled[pdu.Name[prefix:]] = pdu.Value.(int) == 1
+		}
+		return nil
+	}
+
+	columnInfo := func() error {
+		m.Lock()
+		defer m.Unlock()
+
+		// mib-2
+		if strings.HasPrefix(crit.OID, ".1.3.6.1.2.1") {
+			if err := BulkWalkAll(client, ifOperStatus, opStatus); err != nil {
+				return err
+			}
+			if err := suffixValue(ifName, columns); err != nil {
+				return err
+			}
+			if err := suffixValue(ifAlias, aliases); err != nil {
+				return err
+			}
+		} else if len(index) > 0 {
+			if err := suffixValue(index, descriptions); err != nil {
+				return err
+			}
+		}
+		// add manually assigned aliases
+		for k, v := range crit.Aliases {
+			aliases[k] = v
+		}
+		return nil
+	}
+	if err := columnInfo(); err != nil {
 		return nil, err
 	}
-	if err := suffixValue(ifAlias, aliases); err != nil {
-		return nil, err
-	}
-	// add manually assigned aliases
-	for k, v := range crit.Aliases {
-		aliases[k] = v
+
+	// because port info can change over a long running process we need
+	// to be able to update interface data periodically
+	if crit.Refresh > 0 {
+		go func() {
+			c := time.Tick(time.Duration(crit.Refresh) * time.Second)
+			for _ = range c {
+				if err := columnInfo(); err != nil {
+					logger.Printf("refresh error:", err)
+				}
+			}
+		}()
 	}
 
 	// apply tags to resulting value
 	pduTags := func(name, suffix string) (map[string]string, bool) {
-		var column, alias string
+		t := map[string]string{}
+
+		// some oid indexes are comprised of multiple words
+		group := oidStrings(suffix)
 
 		// interface names/aliases only apply to OIDs starting with 'if'
 		// TODO: there should be a more "formal" way of applying
 		if strings.HasPrefix(name, "if") && len(suffix) > 0 {
+			m.Lock()
 			if _, ok := enabled[suffix]; !ok {
+				m.Unlock()
 				return nil, false
 			}
-			column = columns[suffix]
-			alias = aliases[suffix]
+			if column, ok := columns[suffix]; ok && len(column) > 0 {
+				t["column"] = column
+			}
+			if alias, ok := aliases[suffix]; ok && len(alias) > 0 {
+				t["alias"] = alias
+			}
+			m.Unlock()
+		}
+		if len(index) > 0 && len(suffix) > 0 {
+			m.Lock()
+			if desc, ok := descriptions[suffix]; ok && len(desc) > 0 {
+				t["descr"] = desc
+			}
+			m.Unlock()
 		}
 
-		group := oidStrings(suffix)
-		if len(group) == 0 && len(column) == 0 && suffix != "0" {
-			column = makeString(strings.Split(suffix, "."))
-		}
-
-		t := map[string]string{}
-		if len(column) > 0 {
-			t["column"] = column
-		}
-		if len(alias) > 0 {
-			t["alias"] = alias
-		}
 		if len(group) > 0 && len(group[0]) > 0 {
 			t["grouping"] = group[0]
 		}
@@ -446,7 +495,8 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 
 		value, err := pduType(pdu)
 		if err != nil {
-			return errors.Wrapf(err, "bad bulk name:%s", name)
+			logger.Printf("bad bulk name:%s error:%s\n", name, err)
+			return nil
 		}
 		return sender(name, t, value, now)
 	}, nil
@@ -509,29 +559,47 @@ func BulkWalkAll(client *gosnmp.GoSNMP, oid string, fn gosnmp.WalkFunc) error {
 }
 
 // DebugSender returns a Sender that will print out data sent to it
-func DebugSender(sender Sender, logger *log.Logger) Sender {
+func DebugSender(sender Sender, regexps []string, logger *log.Logger) (Sender, error) {
 	if logger == nil {
 		logger = log.New(os.Stdout, "", 0)
 	}
-	return func(name string, tags map[string]string, value interface{}, when time.Time) error {
-		host := tags["host"]
-		if tags != nil && len(tags) > 0 {
-			t := make([]string, 0, len(tags))
-			for k, v := range tags {
-				if k == "host" {
-					continue
-				}
-				t = append(t, fmt.Sprintf("%s=%v", k, v))
+	filterNames := []*regexp.Regexp{}
+	for _, n := range regexps {
+		re, err := regexp.Compile(n)
+		if err != nil {
+			return nil, errors.Wrapf(err, "pattern: %s", n)
+		}
+		filterNames = append(filterNames, re)
+	}
+	show := func(name string) bool {
+		for _, r := range filterNames {
+			if r.MatchString(name) {
+				return true
 			}
-			logger.Printf("Host:%s Name:%s Value:%v (%T) Tags:%s\n", host, name, value, value, strings.Join(t, ","))
-		} else {
-			logger.Printf("Host:%s Name:%s Value:%v (%T)\n", host, name, value, value)
+		}
+		return len(filterNames) == 0
+	}
+	return func(name string, tags map[string]string, value interface{}, when time.Time) error {
+		if show(name) {
+			host := tags["host"]
+			if tags != nil && len(tags) > 0 {
+				t := make([]string, 0, len(tags))
+				for k, v := range tags {
+					if k == "host" {
+						continue
+					}
+					t = append(t, fmt.Sprintf("%s=%v", k, v))
+				}
+				logger.Printf("Host:%s Name:%s Value:%v (%T) Tags:%s\n", host, name, value, value, strings.Join(t, ","))
+			} else {
+				logger.Printf("Host:%s Name:%s Value:%v (%T)\n", host, name, value, value)
+			}
 		}
 		if sender != nil {
 			return sender(name, tags, value, when)
 		}
 		return nil
-	}
+	}, nil
 }
 
 // Sampler will do a bulkwalk on the device specified using the given Profile
@@ -545,7 +613,9 @@ func Sampler(p Profile, crit Criteria, sender Sender) error {
 		return err
 	}
 	if sender == nil {
-		sender = DebugSender(nil, nil)
+		if sender, err = DebugSender(nil, nil, nil); err != nil {
+			return err
+		}
 	}
 	walker, err := BulkColumns(client, crit, sender, nil)
 	if err != nil {
@@ -555,7 +625,7 @@ func Sampler(p Profile, crit Criteria, sender Sender) error {
 }
 
 // Bulkwalker will do a bulkwalk on the device specified in the Profile
-func Bulkwalker(p Profile, crit Criteria, freq int, sender Sender, errFn ErrFunc, logger *log.Logger) error {
+func Bulkwalker(p Profile, crit Criteria, sender Sender, errFn ErrFunc, logger *log.Logger) error {
 	client, err := NewClient(p)
 	if err != nil {
 		return err
@@ -564,6 +634,12 @@ func Bulkwalker(p Profile, crit Criteria, freq int, sender Sender, errFn ErrFunc
 	if err != nil {
 		return err
 	}
+	if len(crit.Index) > 0 {
+		crit.Index, err = getOID(crit.Index)
+		if err != nil {
+			return err
+		}
+	}
 	if debugLogger != nil {
 		client.Logger = debugLogger
 	}
@@ -571,7 +647,7 @@ func Bulkwalker(p Profile, crit Criteria, freq int, sender Sender, errFn ErrFunc
 	if err != nil {
 		return err
 	}
-	go Poller(client, crit.OID, freq, walker, errFn)
+	go Poller(client, crit.OID, crit.Freq, walker, errFn)
 	return nil
 }
 
