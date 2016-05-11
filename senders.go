@@ -16,6 +16,12 @@ import (
 	"github.com/pkg/errors"
 )
 
+// Counter32 is 32 bit SNMP counter
+type Counter32 uint32
+
+// Counter64 is 32 bit SNMP counter
+type Counter64 uint64
+
 // Recipe describes how to "cook" the data
 type Recipe struct {
 	Rename string // new name to give data (if set)
@@ -27,7 +33,7 @@ type Recipe struct {
 type Recipies map[string]Recipe
 
 type dataPoint struct {
-	value interface{}
+	value uint64
 	when  time.Time
 }
 
@@ -77,30 +83,24 @@ func CalcSender(sender Sender, cook Recipies) Sender {
 			}
 
 			var err error
-			if prior, ok := saved[oid]; ok {
-				this, err := normalize(value)
-				if err != nil {
-					return err
-				}
-				that, err := normalize(prior.value)
-				if err != nil {
-					return err
-				}
+			this, err := normalize(value)
+			if err != nil {
+				return err
+			}
 
+			if prior, ok := saved[oid]; ok {
 				// If the new value is *less* than the prior it was either
 				// a counter wrap or a device reset.
 				// Because device resets happen, we should assume the lesser
 				// value is due to that rather than get a possibly huge spike.
 				delta := this
-				if this >= that {
-					delta -= that
+				if this >= prior.value {
+					delta -= prior.value
 				}
 
-				var aka string
+				aka := name
 				if len(recipe.Rename) > 0 {
 					aka = recipe.Rename
-				} else {
-					aka = name
 				}
 				if recipe.Rate {
 					since := when.Sub(prior.when).Seconds()
@@ -113,7 +113,7 @@ func CalcSender(sender Sender, cook Recipies) Sender {
 				}
 			}
 
-			saved[oid] = dataPoint{value, when}
+			saved[oid] = dataPoint{this, when}
 			if recipe.Orig {
 				return sender(name, tags, value, when)
 			}
@@ -192,45 +192,45 @@ func RegexpSender(sender Sender, regexps []string, keep bool) (Sender, error) {
 }
 
 // DebugSender returns a Sender that will print out data sent to it
-func DebugSender(sender Sender, regexps []string, logger *log.Logger) (Sender, error) {
+func DebugSender(sender Sender, logger *log.Logger) (Sender, error) {
 	if logger == nil {
 		logger = log.New(os.Stdout, "", 0)
 	}
-	filterNames := []*regexp.Regexp{}
-	for _, n := range regexps {
-		re, err := regexp.Compile(n)
-		if err != nil {
-			return nil, errors.Wrapf(err, "pattern: %s", n)
-		}
-		filterNames = append(filterNames, re)
-	}
-	show := func(name string) bool {
-		for _, r := range filterNames {
-			if r.MatchString(name) {
-				return true
-			}
-		}
-		return len(filterNames) == 0
-	}
 	return func(name string, tags map[string]string, value interface{}, when time.Time) error {
-		if show(name) {
-			host := tags["host"]
-			if tags != nil && len(tags) > 0 {
-				t := make([]string, 0, len(tags))
-				for k, v := range tags {
-					if k == "host" {
-						continue
-					}
-					t = append(t, fmt.Sprintf("%s=%v", k, v))
+		host := tags["host"]
+		if tags != nil && len(tags) > 0 {
+			t := make([]string, 0, len(tags))
+			for k, v := range tags {
+				if k == "host" {
+					continue
 				}
-				logger.Printf("Host:%s Name:%s Value:%v (%T) Tags:%s\n", host, name, value, value, strings.Join(t, ","))
-			} else {
-				logger.Printf("Host:%s Name:%s Value:%v (%T)\n", host, name, value, value)
+				t = append(t, fmt.Sprintf("%s=%v", k, v))
 			}
+			logger.Printf("Host:%s Name:%s Value:%v (%T) Tags:%s\n", host, name, value, value, strings.Join(t, ","))
+		} else {
+			logger.Printf("Host:%s Name:%s Value:%v (%T)\n", host, name, value, value)
 		}
 		if sender != nil {
 			return sender(name, tags, value, when)
 		}
 		return nil
+	}, nil
+}
+
+// SplitSender returns a Sender that will send data to both senders
+func SplitSender(s1, s2 Sender) (Sender, error) {
+	if s1 == nil || s2 == nil {
+		return nil, errors.Errorf("sender cannot be nil")
+	}
+	return func(name string, tags map[string]string, value interface{}, when time.Time) error {
+		err1 := s1(name, tags, value, when)
+		err2 := s2(name, tags, value, when)
+		if err1 != nil && err2 != nil {
+			return errors.Wrap(err1, err2.Error())
+		}
+		if err1 != nil {
+			return err1
+		}
+		return err2
 	}, nil
 }
