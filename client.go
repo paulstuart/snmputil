@@ -6,7 +6,6 @@
 package snmputil
 
 import (
-	"log"
 	"time"
 
 	"github.com/pkg/errors"
@@ -15,10 +14,6 @@ import (
 
 const (
 	defaultPort = 161
-)
-
-var (
-	debugLogger *log.Logger
 )
 
 // Profile contains the settings needed to establish an SNMP connection
@@ -49,20 +44,17 @@ func NewClient(p Profile) (*gosnmp.GoSNMP, error) {
 
 	authCheck := func() error {
 		if len(p.AuthPass) < 1 {
-			log.Printf("Error no SNMPv3 password for host %s", p.Host)
-			return errors.New("missing snmp v3 user password")
+			return errors.Errorf("no SNMPv3 password for host %s", p.Host)
 		}
 		if aProto, ok = authProto[p.AuthProto]; !ok {
-			log.Printf("Error in Auth Protocol %s for host %s", p.AuthProto, p.Host)
-			return errors.New("invalid snmp v3 auth protocol")
+			return errors.Errorf("invalid auth protocol %s for host %s", p.AuthProto, p.Host)
 		}
 		return nil
 	}
 
 	v3auth := func() (*gosnmp.UsmSecurityParameters, error) {
 		if len(p.AuthUser) < 1 {
-			log.Printf("Error username not found in snmpv3 %s in host %s", p.AuthUser, p.Host)
-			return nil, errors.New("missing snmp v3 username")
+			return nil, errors.Errorf("username not found for snmpv3 host %s", p.Host)
 		}
 
 		switch p.SecLevel {

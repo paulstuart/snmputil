@@ -18,7 +18,7 @@ import (
 )
 
 var (
-	debugging *log.Logger
+	debugLogger *log.Logger
 
 	// lookupOID is a lookup table to find the dotted form of a symbolic name
 	lookupOID = make(map[string]string)
