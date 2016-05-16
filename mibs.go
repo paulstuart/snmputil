@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/soniah/gosnmp"
 	"io"
 	"log"
 	"os"
@@ -14,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/soniah/gosnmp"
 )
 
 // MibInfo contains all the details of a MIB entry
@@ -37,14 +38,9 @@ type oidInfo struct {
 	Fn    pduReader
 }
 
-func (o oidInfo) String() string {
-	return o.Name[o.Index:]
-}
-
 type mibFunc func(MibInfo)
 
 var (
-	mibBase   = make(map[string]MibInfo)
 	oidBase   = make(map[string]oidInfo)
 	dupeNames = make(map[string]string)
 
@@ -55,6 +51,10 @@ var (
 	look = regexp.MustCompile("([a-zA-Z]+)\\(([0-9]+)\\)")
 	list = regexp.MustCompile("([a-zA-Z]+)\\s+{(.*)}")
 )
+
+func (o oidInfo) String() string {
+	return o.Name[o.Index:]
+}
 
 func oidReader(m MibInfo) {
 	index := strings.Index(m.Name, "::")
@@ -76,20 +76,17 @@ func oidReader(m MibInfo) {
 
 // pduFunc returns a pduReader based upon the OID type and hints
 func pduFunc(m MibInfo) pduReader {
-	if len(m.Hint) == 0 {
-		return pduType
-	}
 	if m.Hint == "2d-1d-1d,1d:1d:1d.1d,1a1d:1d" {
-		fmt.Println("DATE TIME FOR:", m.Name)
 		return dateTime
 	}
-	if fn := numericHint(m.Hint); fn != nil {
+	if fn := numberType(m.Syntax); fn != nil {
 		return fn
 	}
 	return pduType
 }
 
-func oidTable(mib string) error {
+// LoadMibs will load the entries for the MIBs specified
+func LoadMibs(mib string) error {
 	if err := OIDTranslate(mib, oidReader); err != nil {
 		return err
 	}
@@ -147,10 +144,6 @@ func snmpTranslate(mib, oid string) []string {
 		lines = append(lines, strings.TrimSpace(s.Text()))
 	}
 	return lines
-}
-
-func mBase(m MibInfo) {
-	mibBase[m.OID] = m
 }
 
 func printMibInfo(w io.Writer) mibFunc {
@@ -296,7 +289,10 @@ func looker(s string) (kind string, m map[int]string) {
 	return
 }
 
-func numericHint(s string) pduReader {
+func numberType(s string) pduReader {
+	if len(s) == 0 {
+		return nil
+	}
 	kind, m := looker(s)
 	switch kind {
 	case "BITS":
@@ -309,6 +305,7 @@ func numericHint(s string) pduReader {
 
 func bitFormatter(m map[int]string) pduReader {
 	return func(pdu gosnmp.SnmpPDU) (interface{}, error) {
+		fmt.Println("BITS FOR:", pdu.Name)
 		data := pdu.Value.([]byte)
 		names := make([]string, 0, len(data)*8)
 		cnt := 0
@@ -338,6 +335,3 @@ func intFormatter(m map[int]string) pduReader {
 		return pdu.Value, fmt.Errorf("no label found for index:%d", v)
 	}
 }
-
-/*
- */
