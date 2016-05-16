@@ -16,7 +16,8 @@ import (
 
 const (
 	sysName = ".1.3.6.1.2.1.1.5.0"
-	oidFile = "oids.txt"
+	oidFile = "oids.json"
+	mibs    = "SNMPv2-MIB:IF-MIB"
 )
 
 var (
@@ -56,7 +57,7 @@ func envInt(name string, value *int) {
 }
 
 func init() {
-	if err := LoadOIDFile(oidFile); err != nil {
+	if err := CachedMibInfo(oidFile, mibs); err != nil {
 		panic(err)
 	}
 	if testing.Verbose() {

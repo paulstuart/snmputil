@@ -6,44 +6,17 @@
 package snmputil
 
 import (
-	"bufio"
 	"bytes"
-	"io"
-	"os"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pkg/errors"
 	"github.com/soniah/gosnmp"
 )
 
-// loadOIDs reads in a stream of OIDs and their symbolic names
-func loadOIDs(in io.Reader) error {
-	scanner := bufio.NewScanner(in)
-	for scanner.Scan() {
-		f := strings.Fields(scanner.Text())
-		if len(f) < 2 {
-			continue
-		}
-		// snmptranslate isn't providing leading dot
-		if f[1][:1] != "." {
-			f[1] = "." + f[1]
-		}
-		lookupOID[f[0]] = f[1]
-		rtree, _, _ = rtree.Insert([]byte(f[1]), f[0])
-	}
-	return scanner.Err()
-}
-
-// LoadOIDFile is a helper routine to load OID descriptions from a file
-func LoadOIDFile(filename string) error {
-	f, err := os.Open(filename)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return loadOIDs(f)
-}
+type pduReader func(gosnmp.SnmpPDU) (interface{}, error)
 
 // makeString converts ascii octets into a string
 func makeString(bits []string) string {
@@ -86,6 +59,27 @@ func cleanString(in []byte) string {
 	return string(acc)
 }
 
+// dateTime will convert snmp datetime octets into time.Time
+func dateTime(pdu gosnmp.SnmpPDU) (interface{}, error) {
+	d := pdu.Value.([]byte)
+	offset := 0
+	switch len(d) {
+	case 8:
+	case 11:
+		offset = (int(d[9]) * 3600) + (int(d[10]) * 60)
+		if string(d[8]) == "-" {
+			offset = -offset
+		}
+	default:
+		return time.Time{}, errors.Errorf("invalid octet length:%d", len(d))
+	}
+	year := int(d[0])<<8 + int(d[1])
+	month := time.Month(d[2])
+	nano := int(d[7]) * 1024
+	loc := time.FixedZone("UTC", offset)
+	return time.Date(year, month, int(d[3]), int(d[4]), int(d[5]), int(d[6]), nano, loc), nil
+}
+
 // pduType verifies and normalizes the pdu data
 func pduType(pdu gosnmp.SnmpPDU) (interface{}, error) {
 	switch pdu.Type {
@@ -94,30 +88,30 @@ func pduType(pdu gosnmp.SnmpPDU) (interface{}, error) {
 	case gosnmp.Counter32:
 		switch pdu.Value.(type) {
 		case uint32:
-			return Counter32(pdu.Value.(uint32)), nil
+			return uint32(pdu.Value.(uint32)), nil
 		case int32:
-			return Counter32(pdu.Value.(int32)), nil
+			return uint32(pdu.Value.(int32)), nil
 		case uint:
-			return Counter32(pdu.Value.(uint)), nil
+			return uint32(pdu.Value.(uint)), nil
 		case int:
-			return Counter32(pdu.Value.(int)), nil
+			return uint32(pdu.Value.(int)), nil
 		default:
 			return pdu.Value, errors.Errorf("invalid counter32 type:%T pdu.Value:%v\n", pdu.Value, pdu.Value)
 		}
 	case gosnmp.Counter64:
 		switch pdu.Value.(type) {
 		case uint:
-			return Counter64(pdu.Value.(uint)), nil
+			return uint64(pdu.Value.(uint)), nil
 		case int:
-			return Counter64(pdu.Value.(int)), nil
+			return uint64(pdu.Value.(int)), nil
 		case uint64:
-			return Counter64(pdu.Value.(uint64)), nil
+			return uint64(pdu.Value.(uint64)), nil
 		case int64:
-			return Counter64(pdu.Value.(int64)), nil
+			return uint64(pdu.Value.(int64)), nil
 		case uint32:
-			return Counter64(pdu.Value.(uint32)), nil
+			return uint64(pdu.Value.(uint32)), nil
 		case int32:
-			return Counter64(pdu.Value.(int32)), nil
+			return uint64(pdu.Value.(int32)), nil
 		default:
 			return pdu.Value, errors.Errorf("invalid counter64 type:%T pdu.Value:%v\n", pdu.Value, pdu.Value)
 		}
@@ -148,4 +142,31 @@ func getOID(oid string) (string, error) {
 		return oid, errors.Errorf("no OID found for %s", oid)
 	}
 	return fixed, nil
+}
+
+// regexpFilter returns a function that filters results based on name
+// returns true if name is not valid
+func regexpFilter(regexps []string, keep bool) (func(string) bool, error) {
+	if len(regexps) == 0 {
+		return func(name string) bool {
+			return false
+		}, nil
+	}
+	filterNames := []*regexp.Regexp{}
+	for _, n := range regexps {
+		re, err := regexp.Compile(n)
+		if err != nil {
+			return nil, errors.Wrapf(err, "pattern: %s", n)
+		}
+		filterNames = append(filterNames, re)
+	}
+
+	return func(name string) bool {
+		for _, r := range filterNames {
+			if r.MatchString(name) {
+				return !keep
+			}
+		}
+		return keep
+	}, nil
 }

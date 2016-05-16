@@ -9,18 +9,11 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/pkg/errors"
 )
-
-// Counter32 is 32 bit SNMP counter
-type Counter32 uint32
-
-// Counter64 is 32 bit SNMP counter
-type Counter64 uint64
 
 // Recipe describes how to "cook" the data
 type Recipe struct {
@@ -37,8 +30,8 @@ type dataPoint struct {
 	when  time.Time
 }
 
-// normalize counter datatype
-func normalize(value interface{}) (uint64, error) {
+// counter datatype
+func counter(value interface{}) (uint64, error) {
 	switch value.(type) {
 	case uint:
 		return uint64(value.(uint)), nil
@@ -52,10 +45,6 @@ func normalize(value interface{}) (uint64, error) {
 		return uint64(value.(uint32)), nil
 	case int32:
 		return uint64(value.(int32)), nil
-	case Counter32:
-		return uint64(value.(Counter32)), nil
-	case Counter64:
-		return uint64(value.(Counter64)), nil
 	default:
 		return 0, errors.Errorf("invalid cooked data type:%T value:%v\n", value, value)
 	}
@@ -83,7 +72,7 @@ func CalcSender(sender Sender, cook Recipies) Sender {
 			}
 
 			var err error
-			this, err := normalize(value)
+			this, err := counter(value)
 			if err != nil {
 				return err
 			}
@@ -133,57 +122,30 @@ func StripSender(sender Sender, taglist []string) Sender {
 	}
 }
 
-// NormalSender will create a sender that normalizes datatypes
-func NormalSender(sender Sender) Sender {
+// IntegerSender will create a sender that makes unsigned counters signed integers
+func IntegerSender(sender Sender) Sender {
 	return func(name string, tags map[string]string, value interface{}, when time.Time) error {
-		var v interface{}
 		switch value.(type) {
 		case uint:
-			v = int64(value.(uint))
-		case int:
-			v = int64(value.(int))
-		case uint64:
-			v = int64(value.(uint64))
-		case int64:
-			v = int64(value.(int64))
+			value = int(value.(uint))
 		case uint32:
-			v = int64(value.(uint32))
-		case int32:
-			v = int64(value.(int32))
-		case Counter32:
-			v = int64(value.(Counter32))
-		case Counter64:
-			v = int64(value.(Counter64))
-		default:
-			v = value
+			value = int64(value.(uint32))
+		case uint64:
+			value = int64(value.(uint64))
 		}
-		return sender(name, tags, v, when)
+		return sender(name, tags, value, when)
 	}
 }
 
 // RegexpSender returns a Sender that filters results based on name
 func RegexpSender(sender Sender, regexps []string, keep bool) (Sender, error) {
-	filterNames := []*regexp.Regexp{}
-	for _, n := range regexps {
-		re, err := regexp.Compile(n)
-		if err != nil {
-			return nil, errors.Wrapf(err, "pattern: %s", n)
-		}
-		filterNames = append(filterNames, re)
+	filter, err := regexpFilter(regexps, keep)
+	if err != nil {
+		return nil, err
 	}
 
 	return func(name string, tags map[string]string, value interface{}, when time.Time) error {
-		filtered := keep
-		for _, r := range filterNames {
-			if r.MatchString(name) {
-				if keep {
-					filtered = false
-					break
-				}
-				return nil
-			}
-		}
-		if filtered {
+		if filter(name) {
 			return nil
 		}
 
@@ -215,6 +177,19 @@ func DebugSender(sender Sender, logger *log.Logger) (Sender, error) {
 		}
 		return nil
 	}, nil
+}
+
+// SnoopSender returns a Sender that will send data to both senders
+func SnoopSender(s Sender, re []string, keep bool, filename string) (Sender, error) {
+	/*
+		snoop := []string{"jnxOperatingContentsIndex"}
+		if len(snoop) > 0 {
+			f, _ := os.Create("debug.log")
+			dbug := log.New(f, "", log.LstdFlags)
+			sender, _ = snmp.DebugSender(sender, snoop, dbug)
+		}
+	*/
+	return nil, nil
 }
 
 // SplitSender returns a Sender that will send data to both senders

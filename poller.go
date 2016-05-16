@@ -20,11 +20,9 @@ import (
 var (
 	debugLogger *log.Logger
 
-	// lookupOID is a lookup table to find the dotted form of a symbolic name
-	lookupOID = make(map[string]string)
-
 	// done will terminate all polling processes if closed
 	done = make(chan struct{})
+
 	// how to break up column indexes with multiple elements
 	multiName = strings.Fields("Grouping Member Element Item")
 	rtree     = radix.New()
@@ -45,6 +43,8 @@ type Criteria struct {
 	Index   string            // OID of table index
 	Tags    map[string]string // any additional tags to associate
 	Aliases map[string]string // optional column aliases
+	Regexps []string          // list of regular expressions to filter by name
+	Keep    bool              // Keep matched names if true, discard matches if false
 	OIDTag  bool              // add OID as a tag
 	Freq    int               // how often to poll for data (in seconds)
 	Refresh int               // how often to refresh column data (in seconds)
@@ -59,13 +59,17 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 		logger = log.New(ioutil.Discard, "", 0)
 	}
 
+	filter, err := regexpFilter(crit.Regexps, crit.Keep)
+	if err != nil {
+		return nil, err
+	}
+
 	// Interface info
 	columns := make(map[string]string)
 	aliases := make(map[string]string)
 	enabled := make(map[string]bool)
 	descriptions := make(map[string]string)
 
-	var err error
 	var index string
 	var m sync.Mutex
 
@@ -198,7 +202,15 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 			return errors.Errorf("cannot find name for OID: %s", pdu.Name)
 		}
 		subOID := string(sub)
+		oInfo, ok := oidBase[subOID]
+		if !ok {
+			return errors.Errorf("cannot find info for OID: %s", subOID)
+		}
 		name := v.(string)
+		if filter(name) {
+			return nil
+		}
+
 		var suffix string
 		if len(subOID) < len(pdu.Name) {
 			suffix = pdu.Name[len(subOID)+1:]
@@ -214,7 +226,7 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 			t["oid"] = pdu.Name
 		}
 
-		value, err := pduType(pdu)
+		value, err := oInfo.Fn(pdu)
 		if err != nil {
 			logger.Printf("bad bulk name:%s error:%s\n", name, err)
 			return nil
