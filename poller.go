@@ -111,14 +111,22 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 			if err := suffixValue(ifAlias, aliases); err != nil {
 				return err
 			}
+			// add manually assigned aliases
+			cname := make(map[string]string)
+			for k, v := range columns {
+				cname[v] = k
+			}
+			for k, v := range crit.Aliases {
+				col, ok := cname[k]
+				if !ok {
+					return errors.Errorf("host %s does not have interface:%s", client.Target, k)
+				}
+				aliases[col] = v
+			}
 		} else if len(index) > 0 {
 			if err := suffixValue(index, descriptions); err != nil {
 				return err
 			}
-		}
-		// add manually assigned aliases
-		for k, v := range crit.Aliases {
-			aliases[k] = v
 		}
 		return nil
 	}
