@@ -16,8 +16,6 @@ import (
 	"github.com/soniah/gosnmp"
 )
 
-type pduReader func(gosnmp.SnmpPDU) (interface{}, error)
-
 // makeString converts ascii octets into a string
 func makeString(bits []string) string {
 	chars := make([]byte, len(bits))
@@ -85,16 +83,21 @@ func pduType(pdu gosnmp.SnmpPDU) (interface{}, error) {
 	switch pdu.Type {
 	case gosnmp.Integer, gosnmp.Gauge32, gosnmp.TimeTicks, gosnmp.Uinteger32:
 	case gosnmp.IPAddress, gosnmp.ObjectIdentifier:
+
 	case gosnmp.Counter32:
 		switch pdu.Value.(type) {
-		case uint32:
-			return uint32(pdu.Value.(uint32)), nil
-		case int32:
-			return uint32(pdu.Value.(int32)), nil
 		case uint:
 			return uint32(pdu.Value.(uint)), nil
+		case uint32:
+			return uint32(pdu.Value.(uint32)), nil
+		case uint64:
+			return uint32(pdu.Value.(uint64)), nil
 		case int:
 			return uint32(pdu.Value.(int)), nil
+		case int32:
+			return uint32(pdu.Value.(int32)), nil
+		case int64:
+			return uint32(pdu.Value.(int64)), nil
 		default:
 			return pdu.Value, errors.Errorf("invalid counter32 type:%T pdu.Value:%v\n", pdu.Value, pdu.Value)
 		}
@@ -102,18 +105,18 @@ func pduType(pdu gosnmp.SnmpPDU) (interface{}, error) {
 		switch pdu.Value.(type) {
 		case uint:
 			return uint64(pdu.Value.(uint)), nil
-		case int:
-			return uint64(pdu.Value.(int)), nil
-		case uint64:
-			return uint64(pdu.Value.(uint64)), nil
-		case int64:
-			return uint64(pdu.Value.(int64)), nil
 		case uint32:
 			return uint64(pdu.Value.(uint32)), nil
+		case uint64:
+			return uint64(pdu.Value.(uint64)), nil
+		case int:
+			return uint64(pdu.Value.(int)), nil
 		case int32:
 			return uint64(pdu.Value.(int32)), nil
+		case int64:
+			return uint64(pdu.Value.(int64)), nil
 		default:
-			return pdu.Value, errors.Errorf("invalid counter64 type:%T pdu.Value:%v\n", pdu.Value, pdu.Value)
+			return pdu.Value, errors.Errorf("invalid counter32 type:%T pdu.Value:%v\n", pdu.Value, pdu.Value)
 		}
 	case gosnmp.OctetString:
 		s := cleanString([]byte(pdu.Value.([]uint8)))
@@ -137,6 +140,8 @@ func getOID(oid string) (string, error) {
 	if strings.HasPrefix(oid, ".") {
 		return oid, nil
 	}
+	mu.Lock()
+	defer mu.Unlock()
 	fixed, ok := lookupOID[oid]
 	if !ok {
 		return oid, errors.Errorf("no OID found for %s", oid)

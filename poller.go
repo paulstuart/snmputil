@@ -34,8 +34,13 @@ const (
 	ifOperStatus = ".1.3.6.1.2.1.2.2.1.8"
 )
 
+// TimeStamp tracks execution tim
+type TimeStamp struct {
+	Start, Stop time.Time
+}
+
 // Sender will send the interpreted PDU value to be saved or whathaveyou
-type Sender func(string, map[string]string, interface{}, time.Time) error
+type Sender func(string, map[string]string, interface{}, TimeStamp) error
 
 // Criteria specifies what to query and what to keep
 type Criteria struct {
@@ -53,15 +58,18 @@ type Criteria struct {
 // ErrFunc processes errors and may be nil if desired
 type ErrFunc func(error)
 
+// ResetFunc resets the time start for SNMP capture
+type ResetFunc func()
+
 // BulkColumns returns a gosnmp.WalkFunc that will process results from a bulkwalk
-func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *log.Logger) (gosnmp.WalkFunc, error) {
+func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *log.Logger) (gosnmp.WalkFunc, ResetFunc, error) {
 	if logger == nil {
 		logger = log.New(ioutil.Discard, "", 0)
 	}
 
 	filter, err := regexpFilter(crit.Regexps, crit.Keep)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Interface info
@@ -71,8 +79,21 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 	descriptions := make(map[string]string)
 
 	var index string
-	var m sync.Mutex
+	var m, tux sync.Mutex
+	var timer time.Time
 
+	resetTimer := func() {
+		tux.Lock()
+		timer = time.Now()
+		tux.Unlock()
+	}
+
+	started := func() time.Time {
+		tux.Lock()
+		t := timer
+		tux.Unlock()
+		return t
+	}
 	// get interface column names and aliases
 	suffixValue := func(oid string, lookup map[string]string) error {
 		fn := func(pdu gosnmp.SnmpPDU) error {
@@ -176,7 +197,7 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 
 	if len(crit.Index) > 0 {
 		if index, err = getOID(crit.Index); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -186,7 +207,7 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 	crit.Tags["host"] = client.Target
 
 	if err := columnInfo(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// because port info can change over a long running process we need
@@ -239,12 +260,15 @@ func BulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 			logger.Printf("bad bulk name:%s error:%s\n", name, err)
 			return nil
 		}
-		return sender(name, t, value, now)
-	}, nil
+		return sender(name, t, value, TimeStamp{started(), now})
+	}, resetTimer, nil
 }
 
 // BulkWalkAll applies bulk walk results to fn once all values returned (synchronously)
 func BulkWalkAll(client *gosnmp.GoSNMP, oid string, fn gosnmp.WalkFunc) error {
+	if len(oid) == 0 {
+		return errors.Errorf("no OID specified")
+	}
 	pdus, err := client.BulkWalkAll(oid)
 	if err != nil {
 		return err
@@ -258,52 +282,54 @@ func BulkWalkAll(client *gosnmp.GoSNMP, oid string, fn gosnmp.WalkFunc) error {
 }
 
 // setup preparse the snmp client and returns a walker function to handle bulkwalks
-func setup(p Profile, crit *Criteria, sender Sender, logger *log.Logger) (*gosnmp.GoSNMP, gosnmp.WalkFunc, error) {
+func setup(p Profile, crit *Criteria, sender Sender, logger *log.Logger) (*gosnmp.GoSNMP, gosnmp.WalkFunc, ResetFunc, error) {
 	client, err := NewClient(p)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if crit.OID, err = getOID(crit.OID); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if len(crit.Index) > 0 {
 		if crit.Index, err = getOID(crit.Index); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
 	if sender == nil {
 		sender, _ = DebugSender(nil, nil)
 	}
-	walker, err := BulkColumns(client, *crit, sender, logger)
-	return client, walker, err
+	walker, reset, err := BulkColumns(client, *crit, sender, logger)
+	return client, walker, reset, err
 }
 
 // Sampler will do a single bulkwalk on the device specified using the given Profile
 func Sampler(p Profile, crit Criteria, sender Sender) error {
-	client, walker, err := setup(p, &crit, sender, nil)
+	client, walker, reset, err := setup(p, &crit, sender, nil)
 	if err != nil {
 		return err
 	}
+	reset()
 	return BulkWalkAll(client, crit.OID, walker)
 }
 
 // Bulkwalker will do a bulkwalk on the device specified in the Profile
 func Bulkwalker(p Profile, crit Criteria, sender Sender, errFn ErrFunc, logger *log.Logger) error {
-	client, walker, err := setup(p, &crit, sender, logger)
+	client, walker, reset, err := setup(p, &crit, sender, logger)
 	if err != nil {
 		return err
 	}
 	if debugLogger != nil {
 		client.Logger = debugLogger
 	}
-	go Poller(client, crit.OID, crit.Freq, walker, errFn)
+	go Poller(client, crit.OID, crit.Freq, walker, errFn, reset)
 	return nil
 }
 
 // Poller will make snmp requests indefinitely
-func Poller(client *gosnmp.GoSNMP, oid string, freq int, walker gosnmp.WalkFunc, errFn ErrFunc) {
+func Poller(client *gosnmp.GoSNMP, oid string, freq int, walker gosnmp.WalkFunc, errFn ErrFunc, reset ResetFunc) {
 	c := time.Tick(time.Duration(freq) * time.Second)
 	for {
+		reset()
 		err := client.BulkWalk(oid, walker)
 		if errFn != nil {
 			errFn(err)
@@ -315,6 +341,14 @@ func Poller(client *gosnmp.GoSNMP, oid string, freq int, walker gosnmp.WalkFunc,
 			client.Conn.Close()
 			return
 		}
+	}
+}
+
+// OIDCollector returns a walker function that collects OIDs used
+func OIDCollector(c chan string) gosnmp.WalkFunc {
+	return func(pdu gosnmp.SnmpPDU) error {
+		c <- pdu.Name
+		return nil
 	}
 }
 

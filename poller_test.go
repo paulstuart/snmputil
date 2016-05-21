@@ -30,8 +30,8 @@ func walkTest(t *testing.T, p Profile, c Criteria) {
 			t.Error(err)
 		}
 	}
-	testSender := func(name string, tags map[string]string, value interface{}, when time.Time) error {
-		t.Logf("Name:%s Value:%v Time:%s Tags:%v\n", name, value, when, tags)
+	testSender := func(name string, tags map[string]string, value interface{}, ts TimeStamp) error {
+		t.Logf("Name:%s Value:%v Time:%s Tags:%v\n", name, value, ts.Start, tags)
 		return nil
 	}
 	if err := Bulkwalker(p, c, testSender, errFn, logger); err != nil {
@@ -53,8 +53,8 @@ func TestFilters(t *testing.T) {
 			t.Error(err)
 		}
 	}
-	testSender := func(name string, tags map[string]string, value interface{}, when time.Time) error {
-		t.Logf("Name:%s Value:%v Time:%s Tags:%v\n", name, value, when, tags)
+	testSender := func(name string, tags map[string]string, value interface{}, ts TimeStamp) error {
+		t.Logf("Name:%s Value:%v Time:%s Tags:%v\n", name, value, ts.Start, tags)
 		if strings.HasSuffix(name, "Time") {
 			return fmt.Errorf("did not expect name with Time suffix: %s", name)
 		}
@@ -70,7 +70,7 @@ func TestFilters(t *testing.T) {
 	if err := Bulkwalker(profileV2, crit, testSender, errFn, nil); err != nil {
 		t.Error(err)
 	}
-	time.Sleep(33 * time.Second)
+	time.Sleep(10 * time.Second)
 }
 
 func TestSample(t *testing.T) {
@@ -78,7 +78,7 @@ func TestSample(t *testing.T) {
 		OID:  "system",
 		Tags: testTags,
 	}
-	sender := func(name string, tags map[string]string, value interface{}, when time.Time) error {
+	sender := func(name string, tags map[string]string, value interface{}, ts TimeStamp) error {
 		t.Logf("Host:%s Name:%s Value:%v Tags:%v\n", tags["host"], name, value, tags)
 		return nil
 	}
