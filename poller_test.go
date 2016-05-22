@@ -18,9 +18,10 @@ const (
 
 var (
 	testCrit = Criteria{
-		OID:  testOID,
-		Tags: testTags,
-		Freq: testFreq,
+		OID:   testOID,
+		Tags:  testTags,
+		Freq:  testFreq,
+		Count: 1,
 	}
 )
 
@@ -34,7 +35,7 @@ func walkTest(t *testing.T, p Profile, c Criteria) {
 		t.Logf("Name:%s Value:%v Time:%s Tags:%v\n", name, value, ts.Start, tags)
 		return nil
 	}
-	if err := Bulkwalker(p, c, testSender, errFn, logger); err != nil {
+	if err := Poller(p, c, testSender, errFn, logger); err != nil {
 		t.Error(err)
 	}
 }
@@ -61,13 +62,13 @@ func TestFilters(t *testing.T) {
 		return nil
 	}
 	crit := Criteria{
-		OID:  "system",
-		Tags: testTags,
+		OID:   "system",
+		Tags:  testTags,
+		Count: 1,
 	}
-	//crit.Regexps = []string{".*Time"}
 	regexps := []string{".*Time"}
 	testSender, _ = RegexpSender(testSender, regexps, false)
-	if err := Bulkwalker(profileV2, crit, testSender, errFn, nil); err != nil {
+	if err := Poller(profileV2, crit, testSender, errFn, nil); err != nil {
 		t.Error(err)
 	}
 	time.Sleep(10 * time.Second)
@@ -75,14 +76,15 @@ func TestFilters(t *testing.T) {
 
 func TestSample(t *testing.T) {
 	crit := Criteria{
-		OID:  "system",
-		Tags: testTags,
+		OID:     "system",
+		Tags:    testTags,
+		Regexps: []string{".*Time"},
+		Count:   1,
 	}
 	sender := func(name string, tags map[string]string, value interface{}, ts TimeStamp) error {
 		t.Logf("Host:%s Name:%s Value:%v Tags:%v\n", tags["host"], name, value, tags)
 		return nil
 	}
-	//Regexps: []string{".*Time"},
 	if err := Sampler(profileV3, crit, sender); err != nil {
 		t.Error(err)
 	}

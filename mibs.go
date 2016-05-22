@@ -63,7 +63,7 @@ func (o oidInfo) String() string {
 }
 
 // RootOID when given a map of names and their OIDs
-// will return a function that will return the root OID
+// returns a function that returns the root OID
 // of a full OID with index
 func RootOID(m map[string]string) func(string) string {
 	tree := radix.New()
@@ -79,7 +79,7 @@ func RootOID(m map[string]string) func(string) string {
 	}
 }
 
-// oidReader will add MibInfo to a database of OIDs and their handlers
+// oidReader adds MibInfo to a database of OIDs and their handlers
 func oidReader(m MibInfo) {
 	index := strings.Index(m.Name, "::")
 	if index > 0 {
@@ -115,7 +115,7 @@ func pduFunc(m MibInfo) pduReader {
 	return pduType
 }
 
-// LoadMibs will load the entries for the MIBs specified
+// LoadMibs loads the entries for the MIBs specified
 func LoadMibs(mib string) error {
 	return MIBTranslate(mib, oidReader)
 }
@@ -145,7 +145,7 @@ func loadMibInfo(filename string, fn mibFunc) error {
 	return mibFile(f, fn)
 }
 
-// CachedMibInfo will load saved mib data or create it
+// CachedMibInfo loads saved mib data or creates it
 // if the file does not exist
 func CachedMibInfo(filename, mibs string) error {
 	f, err := os.Open(filename)
@@ -175,7 +175,7 @@ func printMibInfo(w io.Writer) mibFunc {
 	}
 }
 
-// OIDList will generate a list of OIDs and their details
+// OIDList generates a list of OIDs and their details
 func OIDList(mib string, oids []string, w io.Writer) error {
 	if w == nil {
 		w = os.Stdout
@@ -186,7 +186,7 @@ func OIDList(mib string, oids []string, w io.Writer) error {
 	return MIBTranslate(mib, printMibInfo(w))
 }
 
-// OIDNames will return the OIDs and their names from the mib(s) specified
+// OIDNames returns the OIDs and their names from the mib(s) specified
 func OIDNames(mib string) (map[string]string, error) {
 	m := make(map[string]string)
 	if len(snmptranslate) == 0 {
@@ -216,7 +216,7 @@ func OIDNames(mib string) (map[string]string, error) {
 	return m, cmd.Wait()
 }
 
-// OIDTranslate will apply detailed OID info to fn
+// OIDTranslate applies detailed OID info to fn
 func OIDTranslate(mib string, oids []string, fn mibFunc) error {
 	var (
 		pipeIn  = make(chan string)
@@ -254,7 +254,7 @@ func OIDTranslate(mib string, oids []string, fn mibFunc) error {
 	return nil
 }
 
-// MIBTranslate will apply detailed OID info to fn
+// MIBTranslate applies detailed OID info to fn
 func MIBTranslate(mib string, fn mibFunc) error {
 	info, err := OIDNames(mib)
 	if err != nil {
@@ -267,7 +267,7 @@ func MIBTranslate(mib string, fn mibFunc) error {
 	return OIDTranslate(mib, oids, fn)
 }
 
-// ParseMibInfo will translate output from snmptranslate into structured data
+// ParseMibInfo translates output from snmptranslate into structured data
 func ParseMibInfo(mib, oid string) (*MibInfo, error) {
 	out, err := exec.Command(snmptranslate, "-Td", "-OS", "-m", mib, oid).Output()
 	if err != nil {
@@ -332,7 +332,7 @@ func ParseMibInfo(mib, oid string) (*MibInfo, error) {
 	return &m, nil
 }
 
-// looker will parse mib SYNTAX, e.g.,
+// looker parses mib SYNTAX, e.g.,
 // "BITS {sunday(0), monday(1), tuesday(2), wednesday(3), thursday(4), friday(5), saturday(6)}"
 func looker(s string) (kind string, m map[int]string) {
 	a := list.FindStringSubmatch(s)

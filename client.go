@@ -127,8 +127,8 @@ func NewClient(p Profile) (*gosnmp.GoSNMP, error) {
 		return nil, errors.New("invalid snmp version")
 	}
 
-	if debugLogger != nil {
-		client.Logger = debugLogger
+	if snmpLogger != nil {
+		client.Logger = snmpLogger
 	}
 
 	return client, client.Connect()

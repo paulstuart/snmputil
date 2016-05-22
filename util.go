@@ -57,7 +57,7 @@ func cleanString(in []byte) string {
 	return string(acc)
 }
 
-// dateTime will convert snmp datetime octets into time.Time
+// dateTime converts snmp datetime octets into time.Time
 func dateTime(pdu gosnmp.SnmpPDU) (interface{}, error) {
 	d := pdu.Value.([]byte)
 	offset := 0
@@ -83,7 +83,8 @@ func pduType(pdu gosnmp.SnmpPDU) (interface{}, error) {
 	switch pdu.Type {
 	case gosnmp.Integer, gosnmp.Gauge32, gosnmp.TimeTicks, gosnmp.Uinteger32:
 	case gosnmp.IPAddress, gosnmp.ObjectIdentifier:
-
+	// ensuring counters are correctly cast allows for processing on type
+	// e.g., if it's a uint64 it's a counter so calculate rate change on it
 	case gosnmp.Counter32:
 		switch pdu.Value.(type) {
 		case uint:
@@ -99,7 +100,7 @@ func pduType(pdu gosnmp.SnmpPDU) (interface{}, error) {
 		case int64:
 			return uint32(pdu.Value.(int64)), nil
 		default:
-			return pdu.Value, errors.Errorf("invalid counter32 type:%T pdu.Value:%v\n", pdu.Value, pdu.Value)
+			return pdu.Value, errors.Errorf("invalid Counter32 type:%T pdu.Value:%v\n", pdu.Value, pdu.Value)
 		}
 	case gosnmp.Counter64:
 		switch pdu.Value.(type) {
@@ -116,7 +117,7 @@ func pduType(pdu gosnmp.SnmpPDU) (interface{}, error) {
 		case int64:
 			return uint64(pdu.Value.(int64)), nil
 		default:
-			return pdu.Value, errors.Errorf("invalid counter32 type:%T pdu.Value:%v\n", pdu.Value, pdu.Value)
+			return pdu.Value, errors.Errorf("invalid Counter64 type:%T pdu.Value:%v\n", pdu.Value, pdu.Value)
 		}
 	case gosnmp.OctetString:
 		s := cleanString([]byte(pdu.Value.([]uint8)))
@@ -135,7 +136,7 @@ func pduType(pdu gosnmp.SnmpPDU) (interface{}, error) {
 	return pdu.Value, nil
 }
 
-// getOID will return the OID representing name
+// getOID returns the OID representing name
 func getOID(oid string) (string, error) {
 	if strings.HasPrefix(oid, ".") {
 		return oid, nil
@@ -150,7 +151,7 @@ func getOID(oid string) (string, error) {
 }
 
 // regexpFilter returns a function that filters results based on name
-// returns true if name is not valid
+// the function returns true if name is not valid
 func regexpFilter(regexps []string, keep bool) (func(string) bool, error) {
 	if len(regexps) == 0 {
 		return func(name string) bool {
@@ -161,7 +162,7 @@ func regexpFilter(regexps []string, keep bool) (func(string) bool, error) {
 	for _, n := range regexps {
 		re, err := regexp.Compile(n)
 		if err != nil {
-			return nil, errors.Wrapf(err, "pattern: %s", n)
+			return nil, errors.Wrapf(err, "filter pattern: %s", n)
 		}
 		filterNames = append(filterNames, re)
 	}
