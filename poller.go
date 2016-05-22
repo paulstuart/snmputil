@@ -87,7 +87,7 @@ func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 	timeIn := 0
 	timeCnt := 0
 
-	started := func(n time.Time) time.Time {
+	started := func(n time.Time) TimeStamp {
 		tux.Lock()
 		t := timer
 		d := int(n.Sub(t).Nanoseconds() / 1000000)
@@ -102,7 +102,7 @@ func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 			}
 		}
 		tux.Unlock()
-		return t
+		return TimeStamp{t, n}
 	}
 
 	avg := func() int {
@@ -284,7 +284,7 @@ func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 			logger.Printf("bad bulk name:%s error:%s\n", name, err)
 			return nil
 		}
-		return sender(name, t, value, TimeStamp{started(now), now})
+		return sender(name, t, value, started(now))
 	}, avg, nil
 }
 
@@ -332,8 +332,8 @@ func setup(p Profile, crit *Criteria, sender Sender, logger *log.Logger) (string
 }
 
 // Sampler does a single bulkwalk on the device specified using the given Profile
-func Sampler(p Profile, crit Criteria, sender Sender) error {
-	oid, client, walker, avg, err := setup(p, &crit, sender, nil)
+func Sampler(p Profile, c Criteria, s Sender) error {
+	oid, client, walker, avg, err := setup(p, &c, s, nil)
 	if err != nil {
 		return err
 	}
@@ -351,13 +351,13 @@ func Walker(p Profile, oid string, fn WalkFunc) error {
 }
 
 // Poller does a bulkwalk on the device specified in the Profile
-func Poller(p Profile, crit Criteria, sender Sender, errFn ErrFunc, logger *log.Logger) error {
-	oid, client, walker, avg, err := setup(p, &crit, sender, logger)
+func Poller(p Profile, c Criteria, s Sender, fn ErrFunc, l *log.Logger) error {
+	oid, client, walker, avg, err := setup(p, &c, s, l)
 	if err != nil {
 		return err
 	}
 
-	freq := crit.Freq
+	freq := c.Freq
 	delay := freq
 	_, name, ok := rtree.Root().LongestPrefix([]byte(oid))
 	if !ok {
@@ -365,7 +365,7 @@ func Poller(p Profile, crit Criteria, sender Sender, errFn ErrFunc, logger *log.
 	}
 
 	defer client.Conn.Close()
-	c := time.Tick(time.Duration(delay) * time.Second)
+	clk := time.Tick(time.Duration(delay) * time.Second)
 	for {
 		// if the last request took longer than the polling frequency
 		// then update the polling frequency to accomodate slower responses
@@ -375,7 +375,7 @@ func Poller(p Profile, crit Criteria, sender Sender, errFn ErrFunc, logger *log.
 		tick := func(adj int) {
 			log.Printf("Adjusting poll for %s/%s from %d to %d seconds (%ds)\n", client.Target, name, delay, adj, mean)
 			delay = adj
-			c = time.Tick(time.Duration(delay) * time.Second)
+			clk = time.Tick(time.Duration(delay) * time.Second)
 		}
 		if mean > delay {
 			// adjust to next whole minute
@@ -392,19 +392,19 @@ func Poller(p Profile, crit Criteria, sender Sender, errFn ErrFunc, logger *log.
 		}
 
 		// errors represent an event occurred, for stats
-		if errFn != nil {
-			errFn(err)
+		if fn != nil {
+			fn(err)
 		}
 
-		if crit.Count > 0 {
-			crit.Count--
-			if crit.Count == 0 {
+		if c.Count > 0 {
+			c.Count--
+			if c.Count == 0 {
 				return err
 			}
 		}
 
 		select {
-		case _ = <-c:
+		case _ = <-clk:
 			continue
 		case _ = <-done:
 			return nil
