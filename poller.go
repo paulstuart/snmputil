@@ -306,18 +306,18 @@ func bulkWalker(client *gosnmp.GoSNMP, oid string, fn WalkFunc) error {
 }
 
 // setup preparse the snmp client and returns a walker function to handle bulkwalks
-func setup(p Profile, crit *Criteria, sender Sender, logger *log.Logger) (string, *gosnmp.GoSNMP, WalkFunc, avgTime, error) {
+func setup(p Profile, crit *Criteria, sender Sender, logger *log.Logger) (string, *gosnmp.GoSNMP, WalkFunc, avgTime, error, *log.Logger) {
 	client, err := NewClient(p)
 	if err != nil {
-		return "", nil, nil, nil, err
+		return "", nil, nil, nil, err, logger
 	}
 	oid, err := getOID(crit.OID)
 	if err != nil {
-		return oid, nil, nil, nil, err
+		return oid, nil, nil, nil, err, logger
 	}
 	if len(crit.Index) > 0 {
 		if crit.Index, err = getOID(crit.Index); err != nil {
-			return oid, nil, nil, nil, err
+			return oid, nil, nil, nil, err, logger
 		}
 	}
 	if sender == nil {
@@ -328,12 +328,12 @@ func setup(p Profile, crit *Criteria, sender Sender, logger *log.Logger) (string
 	}
 
 	walker, tCtl, err := bulkColumns(client, *crit, sender, logger)
-	return oid, client, walker, tCtl, err
+	return oid, client, walker, tCtl, err, logger
 }
 
 // Sampler does a single bulkwalk on the device specified using the given Profile
 func Sampler(p Profile, c Criteria, s Sender) error {
-	oid, client, walker, avg, err := setup(p, &c, s, nil)
+	oid, client, walker, avg, err, _ := setup(p, &c, s, nil)
 	if err != nil {
 		return err
 	}
@@ -352,7 +352,7 @@ func Walker(p Profile, oid string, fn WalkFunc) error {
 
 // Poller does a bulkwalk on the device specified in the Profile
 func Poller(p Profile, c Criteria, s Sender, fn ErrFunc, l *log.Logger) error {
-	oid, client, walker, avg, err := setup(p, &c, s, l)
+	oid, client, walker, avg, err, l := setup(p, &c, s, l)
 	if err != nil {
 		return err
 	}
@@ -373,7 +373,7 @@ func Poller(p Profile, c Criteria, s Sender, fn ErrFunc, l *log.Logger) error {
 		// stats are in ms but we work in seconds
 		mean := avg() / 1000
 		tick := func(adj int) {
-			log.Printf("Adjusting poll for %s/%s from %d to %d seconds (%ds)\n", client.Target, name, delay, adj, mean)
+			l.Printf("Adjusting poll for %s/%s from %d to %d seconds (%ds)\n", client.Target, name, delay, adj, mean)
 			delay = adj
 			clk = time.Tick(time.Duration(delay) * time.Second)
 		}
@@ -388,7 +388,7 @@ func Poller(p Profile, c Criteria, s Sender, fn ErrFunc, l *log.Logger) error {
 		}
 		err := client.BulkWalk(oid, gosnmp.WalkFunc(walker))
 		if err != nil {
-			log.Println(errors.Wrap(err, "bulkwalk failed"))
+			l.Println(errors.Wrap(err, "bulkwalk failed"))
 		}
 
 		// errors represent an event occurred, for stats
