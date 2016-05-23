@@ -39,9 +39,6 @@ type TimeStamp struct {
 	Start, Stop time.Time
 }
 
-// WalkFunc is an import convenince
-type WalkFunc gosnmp.WalkFunc
-
 // Sender sends the interpreted PDU value to be saved or whathaveyou
 type Sender func(string, map[string]string, interface{}, TimeStamp) error
 
@@ -65,7 +62,7 @@ type ErrFunc func(error)
 type avgTime func() int
 
 // bulkColumns returns a gosnmp.WalkFunc that processes results from a bulkwalk
-func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *log.Logger) (WalkFunc, avgTime, error) {
+func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *log.Logger) (gosnmp.WalkFunc, avgTime, error) {
 	filter, err := regexpFilter(crit.Regexps, crit.Keep)
 	if err != nil {
 		return nil, nil, err
@@ -286,7 +283,7 @@ func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 }
 
 // bulkWalker applies bulk walk results to fn once all values returned (synchronously)
-func bulkWalker(client *gosnmp.GoSNMP, oid string, fn WalkFunc) error {
+func bulkWalker(client *gosnmp.GoSNMP, oid string, fn gosnmp.WalkFunc) error {
 	if len(oid) == 0 {
 		return errors.Errorf("no OID specified")
 	}
@@ -303,7 +300,7 @@ func bulkWalker(client *gosnmp.GoSNMP, oid string, fn WalkFunc) error {
 }
 
 // setup preparse the snmp client and returns a walker function to handle bulkwalks
-func setup(p Profile, crit *Criteria, sender Sender, logger *log.Logger) (string, *gosnmp.GoSNMP, WalkFunc, avgTime, *log.Logger, error) {
+func setup(p Profile, crit *Criteria, sender Sender, logger *log.Logger) (string, *gosnmp.GoSNMP, gosnmp.WalkFunc, avgTime, *log.Logger, error) {
 	client, err := newClient(p)
 	if err != nil {
 		return "", nil, nil, nil, logger, err
@@ -337,16 +334,6 @@ func Sampler(p Profile, c Criteria, s Sender) error {
 	avg()
 	defer client.Conn.Close()
 	return bulkWalker(client, oid, walker)
-}
-
-// Walker applies bulk walk results to fn once all values returned (synchronously)
-func Walker(p Profile, oid string, fn WalkFunc) error {
-	client, err := newClient(p)
-	if err != nil {
-		return err
-	}
-	defer client.Conn.Close()
-	return bulkWalker(client, oid, fn)
 }
 
 // Poller does a bulkwalk on the device specified in the Profile
@@ -385,7 +372,7 @@ func Poller(p Profile, c Criteria, s Sender, fn ErrFunc, l *log.Logger) error {
 			// adjust back down if times improve
 			tick(delay - 60)
 		}
-		err := client.BulkWalk(oid, gosnmp.WalkFunc(walker))
+		err := client.BulkWalk(oid, walker)
 		if err != nil {
 			l.Println(errors.Wrap(err, "bulkwalk failed"))
 		}
@@ -418,8 +405,8 @@ type Collector struct {
 	valid func(string) string
 }
 
-// Add notes the oid as being used
-func (c *Collector) Add(oid string) {
+// add notes the oid as being used
+func (c *Collector) add(oid string) {
 	trim := c.valid(oid)
 	c.Lock()
 	c.hits[trim] = struct{}{}
@@ -442,14 +429,14 @@ func (c *Collector) Poll(p Profile, oid string) error {
 		return err
 	}
 	fn := func(pdu gosnmp.SnmpPDU) error {
-		c.Add(pdu.Name)
+		c.add(pdu.Name)
 		return nil
 	}
 	oid, err = getOID(oid)
 	if err != nil {
 		return err
 	}
-	c.Add(oid)
+	c.add(oid)
 	defer client.Conn.Close()
 	return bulkWalker(client, oid, fn)
 }
