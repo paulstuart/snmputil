@@ -411,12 +411,14 @@ func Poller(p Profile, c Criteria, s Sender, fn ErrFunc, l *log.Logger) error {
 	}
 }
 
+// Collector collects unique strings (OIDs)
 type Collector struct {
 	sync.Mutex
 	hits  map[string]struct{}
 	valid func(string) string
 }
 
+// Add notes the oid as being used
 func (c *Collector) Add(oid string) {
 	trim := c.valid(oid)
 	c.Lock()
@@ -424,14 +426,16 @@ func (c *Collector) Add(oid string) {
 	c.Unlock()
 }
 
+// List returns a unique list of all OIDs seen
 func (c *Collector) List() []string {
 	got := make([]string, 0, len(c.hits))
-	for k, _ := range c.hits {
+	for k := range c.hits {
 		got = append(got, k)
 	}
 	return got
 }
 
+// Poll actively collects OIDs from the SNMP device
 func (c *Collector) Poll(p Profile, oid string) error {
 	client, err := newClient(p)
 	if err != nil {
@@ -450,6 +454,7 @@ func (c *Collector) Poll(p Profile, oid string) error {
 	return bulkWalker(client, oid, fn)
 }
 
+// NewCollector returns a Collector to inspect OIDs used
 func NewCollector(mibs string) *Collector {
 	lookup, err := oidNames(mibs)
 	if err != nil {

@@ -115,11 +115,6 @@ func pduFunc(m MibInfo) pduReader {
 	return pduType
 }
 
-// LoadMibs loads the entries for the MIBs specified
-func LoadMibs(mib string) error {
-	return mibTranslate(mib, oidReader)
-}
-
 // mibFile decodes a stream
 func mibFile(r io.Reader, fn mibFunc) error {
 	dec := json.NewDecoder(r)
@@ -135,19 +130,9 @@ func mibFile(r io.Reader, fn mibFunc) error {
 	return nil
 }
 
-// loadMibInfo applys fn to all the records in filename
-func loadMibInfo(filename string, fn mibFunc) error {
-	f, err := os.Open(filename)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return mibFile(f, fn)
-}
-
-// CachedMibInfo loads saved mib data or creates it
+// LoadMIBs loads saved mib data or creates it
 // if the file does not exist
-func CachedMibInfo(filename, mibs string) error {
+func LoadMIBs(filename, mibs string) error {
 	f, err := os.Open(filename)
 	if err != nil {
 		if f, err = os.Create(filename); err != nil {
@@ -157,9 +142,10 @@ func CachedMibInfo(filename, mibs string) error {
 			f.Close()
 			return err
 		}
-		f.Close()
+		f.Seek(0, 0)
 	}
-	return loadMibInfo(filename, oidReader)
+	defer f.Close()
+	return mibFile(f, oidReader)
 }
 
 // printMibInfo returns a prettyprint handler

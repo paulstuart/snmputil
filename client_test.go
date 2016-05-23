@@ -57,7 +57,7 @@ func envInt(name string, value *int) {
 }
 
 func init() {
-	if err := CachedMibInfo(oidFile, mibs); err != nil {
+	if err := LoadMIBs(oidFile, mibs); err != nil {
 		panic(err)
 	}
 	if testing.Verbose() {
