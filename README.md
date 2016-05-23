@@ -12,4 +12,6 @@ It supports:
   * Auto generating OID name lookup and processing (if net-snmp-utils is installed)
   * Auto conversion of INTEGER and BIT formats to their named types
   * Optional processing of counter data (deltas and differentials)
+  * Overide column aliases with custom labels
+  * Auto throttling of requests - never poll faster than device can respond
 
