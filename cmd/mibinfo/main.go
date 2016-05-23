@@ -22,9 +22,9 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		snmputil.OIDList(mibs, f)
+		snmputil.OIDList(mibs, nil, f)
 		f.Close()
 		return
 	}
-	snmputil.OIDList(mibs, nil)
+	snmputil.OIDList(mibs, nil, nil)
 }

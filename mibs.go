@@ -62,10 +62,10 @@ func (o oidInfo) String() string {
 	return o.Name[o.Index:]
 }
 
-// RootOID when given a map of names and their OIDs
+// rootOID when given a map of names and their OIDs
 // returns a function that returns the root OID
 // of a full OID with index
-func RootOID(m map[string]string) func(string) string {
+func rootOID(m map[string]string) func(string) string {
 	tree := radix.New()
 	for name, oid := range m {
 		tree, _, _ = tree.Insert([]byte(oid), name)
@@ -117,7 +117,7 @@ func pduFunc(m MibInfo) pduReader {
 
 // LoadMibs loads the entries for the MIBs specified
 func LoadMibs(mib string) error {
-	return MIBTranslate(mib, oidReader)
+	return mibTranslate(mib, oidReader)
 }
 
 // mibFile decodes a stream
@@ -181,13 +181,13 @@ func OIDList(mib string, oids []string, w io.Writer) error {
 		w = os.Stdout
 	}
 	if len(oids) > 0 {
-		return OIDTranslate(mib, oids, printMibInfo(w))
+		return oidTranslate(mib, oids, printMibInfo(w))
 	}
-	return MIBTranslate(mib, printMibInfo(w))
+	return mibTranslate(mib, printMibInfo(w))
 }
 
-// OIDNames returns the OIDs and their names from the mib(s) specified
-func OIDNames(mib string) (map[string]string, error) {
+// oidNames returns the OIDs and their names from the mib(s) specified
+func oidNames(mib string) (map[string]string, error) {
 	m := make(map[string]string)
 	if len(snmptranslate) == 0 {
 		return m, fmt.Errorf("snmptranslate is not found in current PATH")
@@ -216,8 +216,8 @@ func OIDNames(mib string) (map[string]string, error) {
 	return m, cmd.Wait()
 }
 
-// OIDTranslate applies detailed OID info to fn
-func OIDTranslate(mib string, oids []string, fn mibFunc) error {
+// oidTranslate applies detailed OID info to fn
+func oidTranslate(mib string, oids []string, fn mibFunc) error {
 	var (
 		pipeIn  = make(chan string)
 		pipeOut = make(chan MibInfo, 32000)
@@ -234,7 +234,7 @@ func OIDTranslate(mib string, oids []string, fn mibFunc) error {
 		wg.Add(1)
 		go func() {
 			for oid := range pipeIn {
-				m, err := ParseMibInfo(mib, oid)
+				m, err := parseMibInfo(mib, oid)
 				if err != nil {
 					log.Fatal(err)
 				}
@@ -254,9 +254,9 @@ func OIDTranslate(mib string, oids []string, fn mibFunc) error {
 	return nil
 }
 
-// MIBTranslate applies detailed OID info to fn
-func MIBTranslate(mib string, fn mibFunc) error {
-	info, err := OIDNames(mib)
+// mibTranslate applies detailed OID info to fn
+func mibTranslate(mib string, fn mibFunc) error {
+	info, err := oidNames(mib)
 	if err != nil {
 		return err
 	}
@@ -264,11 +264,11 @@ func MIBTranslate(mib string, fn mibFunc) error {
 	for _, v := range info {
 		oids = append(oids, v)
 	}
-	return OIDTranslate(mib, oids, fn)
+	return oidTranslate(mib, oids, fn)
 }
 
-// ParseMibInfo translates output from snmptranslate into structured data
-func ParseMibInfo(mib, oid string) (*MibInfo, error) {
+// parseMibInfo translates output from snmptranslate into structured data
+func parseMibInfo(mib, oid string) (*MibInfo, error) {
 	out, err := exec.Command(snmptranslate, "-Td", "-OS", "-m", mib, oid).Output()
 	if err != nil {
 		return nil, err

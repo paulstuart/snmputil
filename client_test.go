@@ -115,7 +115,7 @@ func testSysName(client *gosnmp.GoSNMP) error {
 }
 
 func TestV2Profile(t *testing.T) {
-	client, err := NewClient(profileV2)
+	client, err := newClient(profileV2)
 	if err != nil {
 		t.Error(err)
 	}
@@ -126,7 +126,7 @@ func TestV2Profile(t *testing.T) {
 }
 
 func TestV3Profile(t *testing.T) {
-	client, err := NewClient(profileV3)
+	client, err := newClient(profileV3)
 	if err != nil {
 		t.Error(err)
 	}

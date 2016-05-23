@@ -24,8 +24,8 @@ type Profile struct {
 	SecLevel, AuthUser, AuthPass, AuthProto, PrivProto, PrivPass string
 }
 
-// NewClient returns an snmp client that has connected to an snmp agent
-func NewClient(p Profile) (*gosnmp.GoSNMP, error) {
+// newClient returns an snmp client that has connected to an snmp agent
+func newClient(p Profile) (*gosnmp.GoSNMP, error) {
 	var ok bool
 	var aProto gosnmp.SnmpV3AuthProtocol
 	var pProto gosnmp.SnmpV3PrivProtocol
