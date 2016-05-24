@@ -34,7 +34,7 @@ const (
 	ifOperStatus = ".1.3.6.1.2.1.2.2.1.8"
 )
 
-// TimeStamp tracks execution tim
+// TimeStamp tracks execution time
 type TimeStamp struct {
 	Start, Stop time.Time
 }
@@ -51,6 +51,7 @@ type Criteria struct {
 	Regexps []string          // list of regular expressions to filter by name
 	Keep    bool              // Keep matched names if true, discard matches if false
 	OIDTag  bool              // add OID as a tag
+	Suffix  bool              // save suffix portion of OID as tag["suffix"]
 	Count   int               // how many times to poll for data (0 is forever)
 	Freq    int               // how often to poll for data (in seconds)
 	Refresh int               // how often to refresh column data (in seconds)
@@ -174,9 +175,6 @@ func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 	pduTags := func(name, suffix string) (map[string]string, bool) {
 		t := map[string]string{}
 
-		// some oid indexes are comprised of multiple words
-		group := oidStrings(suffix)
-
 		// interface names/aliases only apply to OIDs starting with 'if'
 		// TODO: there should be a more "formal" way of applying
 		if strings.HasPrefix(name, "if") && len(suffix) > 0 {
@@ -201,14 +199,24 @@ func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 			m.Unlock()
 		}
 
-		if len(group) > 0 && len(group[0]) > 0 {
-			t["grouping"] = group[0]
+		if crit.Suffix {
+			t["suffix"] = suffix
+		} else {
+			// some oid indexes are composed of multiple words
+			group := oidStrings(suffix)
+			if len(group) > 0 && len(group[0]) > 0 {
+				t["grouping"] = group[0]
+			}
+			if len(group) > 1 && len(group[1]) > 0 {
+				t["member"] = group[1]
+			}
+			if len(group) > 3 && len(group[1]) > 0 {
+				t["element"] = group[2]
+			}
 		}
-		if len(group) > 1 && len(group[1]) > 0 {
-			t["member"] = group[1]
-		}
-		if len(group) > 3 && len(group[1]) > 0 {
-			t["element"] = group[2]
+
+		for k, v := range crit.Tags {
+			t[k] = v
 		}
 		return t, true
 	}
@@ -244,9 +252,15 @@ func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 	// our handler that handles each returned SNMP packet
 	return func(pdu gosnmp.SnmpPDU) error {
 		now := time.Now()
+		ts := started(now)
 		sub, v, ok := rtree.Root().LongestPrefix([]byte(pdu.Name))
 		if !ok {
-			return errors.Errorf("cannot find name for OID: %s", pdu.Name)
+			// we can't process further, so just send it along
+			t := make(map[string]string)
+			for k, v := range crit.Tags {
+				t[k] = v
+			}
+			return sender(pdu.Name, t, pdu.Value, ts)
 		}
 		subOID := string(sub)
 		oInfo, ok := oidBase[subOID]
@@ -266,9 +280,6 @@ func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 		if !ok {
 			return nil
 		}
-		for k, v := range crit.Tags {
-			t[k] = v
-		}
 		if crit.OIDTag {
 			t["oid"] = pdu.Name
 		}
@@ -278,7 +289,7 @@ func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 			logger.Printf("bad bulk name:%s error:%s\n", name, err)
 			return nil
 		}
-		return sender(name, t, value, started(now))
+		return sender(name, t, value, ts)
 	}, avg, nil
 }
 

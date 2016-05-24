@@ -25,6 +25,17 @@ func makeString(bits []string) string {
 	return cleanString(chars)
 }
 
+// Octets converts a string of octets into an array of ints
+func Octets(in string) []int {
+	bits := strings.Split(in, ".")
+	words := make([]int, 0, len(bits))
+	for _, b := range bits {
+		i, _ := strconv.Atoi(b)
+		words = append(words, i)
+	}
+	return words
+}
+
 // oidStrings converts ascii octets into an array of words
 func oidStrings(in string) []string {
 	words := []string{}

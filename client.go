@@ -110,7 +110,7 @@ func newClient(p Profile) (*gosnmp.GoSNMP, error) {
 	case "1":
 		client.Version = gosnmp.Version1
 		client.Community = p.Community
-	case "2", "2c":
+	case "", "2", "2c":
 		client.Version = gosnmp.Version2c
 		client.Community = p.Community
 	case "3":
