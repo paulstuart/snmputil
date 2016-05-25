@@ -5,6 +5,7 @@
 package snmputil
 
 import (
+	"net"
 	"time"
 
 	"github.com/pkg/errors"
@@ -93,6 +94,11 @@ func newClient(p Profile) (*gosnmp.GoSNMP, error) {
 		default:
 			return nil, errors.Errorf("invalid security level %s for host %s", p.SecLevel, p.Host)
 		}
+	}
+
+	_, err := net.LookupHost(p.Host)
+	if err != nil {
+		return nil, err
 	}
 
 	if p.Port == 0 {

@@ -227,11 +227,6 @@ func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 		}
 	}
 
-	if crit.Tags == nil {
-		crit.Tags = make(map[string]string)
-	}
-	crit.Tags["host"] = client.Target
-
 	if err := columnInfo(); err != nil {
 		return nil, nil, err
 	}
@@ -311,7 +306,7 @@ func bulkWalker(client *gosnmp.GoSNMP, oid string, fn gosnmp.WalkFunc) error {
 }
 
 // setup preparse the snmp client and returns a walker function to handle bulkwalks
-func setup(p Profile, crit *Criteria, sender Sender, logger *log.Logger) (string, *gosnmp.GoSNMP, gosnmp.WalkFunc, avgTime, *log.Logger, error) {
+func setup(p Profile, crit Criteria, sender Sender, logger *log.Logger) (string, *gosnmp.GoSNMP, gosnmp.WalkFunc, avgTime, *log.Logger, error) {
 	client, err := newClient(p)
 	if err != nil {
 		return "", nil, nil, nil, logger, err
@@ -332,13 +327,18 @@ func setup(p Profile, crit *Criteria, sender Sender, logger *log.Logger) (string
 		logger = log.New(ioutil.Discard, "", 0)
 	}
 
-	walker, tCtl, err := bulkColumns(client, *crit, sender, logger)
+	if crit.Tags == nil {
+		crit.Tags = make(map[string]string)
+	}
+	crit.Tags["host"] = client.Target
+
+	walker, tCtl, err := bulkColumns(client, crit, sender, logger)
 	return oid, client, walker, tCtl, logger, err
 }
 
 // Sampler does a single bulkwalk on the device specified using the given Profile
 func Sampler(p Profile, c Criteria, s Sender) error {
-	oid, client, walker, avg, _, err := setup(p, &c, s, nil)
+	oid, client, walker, avg, _, err := setup(p, c, s, nil)
 	if err != nil {
 		return err
 	}
@@ -349,7 +349,7 @@ func Sampler(p Profile, c Criteria, s Sender) error {
 
 // Poller does a bulkwalk on the device specified in the Profile
 func Poller(p Profile, c Criteria, s Sender, fn ErrFunc, l *log.Logger) error {
-	oid, client, walker, avg, l, err := setup(p, &c, s, l)
+	oid, client, walker, avg, l, err := setup(p, c, s, l)
 	if err != nil {
 		return err
 	}
