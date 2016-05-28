@@ -273,28 +273,35 @@ func parseMibInfo(mib, oid string) (*MibInfo, error) {
 	d := make([]string, 0, 32)
 	for i := 2; i < len(lines); i++ {
 		line := lines[i]
+		if strings.HasPrefix(line, "--") {
+			continue
+		}
+		if strings.HasPrefix(line, "::=") {
+			continue
+		}
 		if len(d) > 0 {
-			if !strings.HasPrefix(line, "::=") {
-				d = append(d, line)
-			}
+			d = append(d, line)
 			continue
 		}
 		bits := strings.Split(line, "\t")
 		if len(bits) < 2 {
 			continue
 		}
-		s := bits[1]
-		if strings.HasPrefix(s, "--") {
-			continue
-		}
+		s := strings.Join(bits[1:], "")
 		if strings.HasPrefix(s, `"`) && !strings.HasSuffix(s, `"`) {
+			start := i + 1
+			stop := i
 			for i++; i < len(lines); i++ {
-				line := lines[i]
-				s += line
-				if strings.HasSuffix(line, `"`) {
+				stop = i
+				if strings.HasSuffix(lines[i], `"`) {
 					break
 				}
 			}
+			stop++
+			if len(s) > 0 {
+				s += "\n"
+			}
+			s += strings.Join(lines[start:stop], "\n")
 		}
 		str := strings.Trim(s, `"`)
 		switch bits[0] {
