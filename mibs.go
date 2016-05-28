@@ -55,7 +55,7 @@ var (
 	lookupOID = make(map[string]string)
 
 	digi = regexp.MustCompile("([0-9]+)(\\.\\.([0-9]+))?")
-	look = regexp.MustCompile("([a-zA-Z]+)\\(([0-9]+)\\)")
+	look = regexp.MustCompile("([a-zA-Z0-9]+)\\(([0-9]+)\\)")
 	list = regexp.MustCompile("([a-zA-Z]+)\\s+{(.*)}")
 
 	snmptranslate, _ = exec.LookPath("snmptranslate")
