@@ -361,7 +361,6 @@ func numberType(s string) pduReader {
 
 func bitFormatter(m map[int]string) pduReader {
 	return func(pdu gosnmp.SnmpPDU) (interface{}, error) {
-		fmt.Println("BITS FOR:", pdu.Name)
 		data := pdu.Value.([]byte)
 		names := make([]string, 0, len(data)*8)
 		cnt := 0
