@@ -361,6 +361,12 @@ func Poller(p Profile, c Criteria, s Sender, fn ErrFunc, l *log.Logger) error {
 		name = oid
 	}
 
+	// snmp v1 doesn't support bulkwalk
+	walk := client.BulkWalk
+	if p.Version == "1" {
+		walk = client.Walk
+	}
+
 	defer client.Conn.Close()
 	clk := time.Tick(time.Duration(delay) * time.Second)
 	for {
@@ -383,9 +389,9 @@ func Poller(p Profile, c Criteria, s Sender, fn ErrFunc, l *log.Logger) error {
 			// adjust back down if times improve
 			tick(delay - 60)
 		}
-		err := client.BulkWalk(oid, walker)
-		if err != nil {
-			l.Println(errors.Wrap(err, "bulkwalk failed"))
+
+		if err = walk(oid, walker); err != nil {
+			l.Println(errors.Wrap(err, "snmp walk failed"))
 		}
 
 		// errors represent an event occurred, for stats
