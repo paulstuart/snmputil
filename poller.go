@@ -311,13 +311,12 @@ func setup(p Profile, crit Criteria, sender Sender, logger *log.Logger) (string,
 	if err != nil {
 		return "", nil, nil, nil, logger, err
 	}
-	oid, err := getOID(crit.OID)
-	if err != nil {
-		return oid, nil, nil, nil, logger, err
+	if crit.OID, err = getOID(crit.OID); err != nil {
+		return crit.OID, nil, nil, nil, logger, err
 	}
 	if len(crit.Index) > 0 {
 		if crit.Index, err = getOID(crit.Index); err != nil {
-			return oid, nil, nil, nil, logger, err
+			return crit.OID, nil, nil, nil, logger, err
 		}
 	}
 	if sender == nil {
@@ -333,7 +332,7 @@ func setup(p Profile, crit Criteria, sender Sender, logger *log.Logger) (string,
 	crit.Tags["host"] = client.Target
 
 	walker, tCtl, err := bulkColumns(client, crit, sender, logger)
-	return oid, client, walker, tCtl, logger, err
+	return crit.OID, client, walker, tCtl, logger, err
 }
 
 // Sampler does a single bulkwalk on the device specified using the given Profile
