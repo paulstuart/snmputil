@@ -293,7 +293,12 @@ func bulkWalker(client *gosnmp.GoSNMP, oid string, fn gosnmp.WalkFunc) error {
 	if len(oid) == 0 {
 		return errors.Errorf("no OID specified")
 	}
-	pdus, err := client.BulkWalkAll(oid)
+	// snmp v1 doesn't support bulkwalk
+	walk := client.BulkWalkAll
+	if client.Version == gosnmp.Version1 {
+		walk = client.WalkAll
+	}
+	pdus, err := walk(oid)
 	if err != nil {
 		return err
 	}
