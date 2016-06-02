@@ -31,6 +31,7 @@ var (
 const (
 	ifName       = ".1.3.6.1.2.1.31.1.1.1.1"
 	ifAlias      = ".1.3.6.1.2.1.31.1.1.1.18"
+	ifDescr      = ".1.3.6.1.2.1.2.2.1.2"
 	ifOperStatus = ".1.3.6.1.2.1.2.2.1.8"
 )
 
@@ -72,8 +73,9 @@ func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 	// Interface info
 	columns := make(map[string]string)
 	aliases := make(map[string]string)
+	descrs  := make(map[string]string)
 	enabled := make(map[string]bool)
-	descriptions := make(map[string]string)
+	suffixes := make(map[string]string)
 
 	var index string
 	var m, tux sync.Mutex
@@ -151,6 +153,9 @@ func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 			if err := suffixValue(ifAlias, aliases); err != nil {
 				return err
 			}
+			if err := suffixValue(ifDescr, descrs); err != nil {
+				return err
+			}
 			// add manually assigned aliases
 			cname := make(map[string]string)
 			for k, v := range columns {
@@ -164,7 +169,7 @@ func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 				aliases[col] = v
 			}
 		} else if len(index) > 0 {
-			if err := suffixValue(index, descriptions); err != nil {
+			if err := suffixValue(index, suffixes); err != nil {
 				return err
 			}
 		}
@@ -189,12 +194,15 @@ func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 			if alias, ok := aliases[suffix]; ok && len(alias) > 0 {
 				t["alias"] = alias
 			}
+			if descr, ok := descrs[suffix]; ok && len(descr) > 0 {
+				t["descr"] = descr
+			}
 			m.Unlock()
 		}
 		if len(index) > 0 && len(suffix) > 0 {
 			m.Lock()
-			if desc, ok := descriptions[suffix]; ok && len(desc) > 0 {
-				t["descr"] = desc
+			if desc, ok := suffixes[suffix]; ok && len(desc) > 0 {
+				t["suffix"] = desc
 			}
 			m.Unlock()
 		}
