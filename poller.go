@@ -49,6 +49,7 @@ type Criteria struct {
 	Index   string            // OID of table index
 	Tags    map[string]string // any additional tags to associate
 	Aliases map[string]string // optional column aliases
+	Rename  map[string]string // rename from key to value
 	Regexps []string          // list of regular expressions to filter by name
 	Keep    bool              // Keep matched names if true, discard matches if false
 	OIDTag  bool              // add OID as a tag
@@ -73,7 +74,7 @@ func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 	// Interface info
 	columns := make(map[string]string)
 	aliases := make(map[string]string)
-	descrs  := make(map[string]string)
+	descrs := make(map[string]string)
 	enabled := make(map[string]bool)
 	suffixes := make(map[string]string)
 
@@ -244,7 +245,7 @@ func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 	if crit.Refresh > 0 {
 		go func() {
 			c := time.Tick(time.Duration(crit.Refresh) * time.Second)
-			for _ = range c {
+			for range c {
 				if err := columnInfo(); err != nil {
 					logger.Println(errors.Wrap(err, "refresh error"))
 				}
@@ -273,6 +274,9 @@ func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 		name := v.(string)
 		if filter(name) {
 			return nil
+		}
+		if rename, ok := crit.Rename[name]; ok {
+			name = rename
 		}
 
 		var suffix string
