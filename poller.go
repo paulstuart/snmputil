@@ -203,7 +203,7 @@ func bulkColumns(client *gosnmp.GoSNMP, crit Criteria, sender Sender, logger *lo
 		if len(index) > 0 && len(suffix) > 0 {
 			m.Lock()
 			if desc, ok := suffixes[suffix]; ok && len(desc) > 0 {
-				t["suffix"] = desc
+				t["index"] = desc
 			}
 			m.Unlock()
 		}
